@@ -1,0 +1,33 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Training artifacts
+grpo_checkpoint/
+checkpoints/
+wandb/
+*.safetensors
+
+# Logs
+rewards/*.json
+research/*.md
+*.log
+
+# Secrets
+.env
+.env.local
+.claude/settings.local.json
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Hackathon scratch
+scratch/

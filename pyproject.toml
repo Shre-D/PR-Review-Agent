@@ -1,0 +1,35 @@
+[project]
+name = "pr-review-env"
+version = "0.1.0"
+description = "RL environment for PR triage via static analysis tool routing"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "Your Team"}]
+license = {text = "BSD-3-Clause"}
+
+dependencies = [
+    "openenv-core",
+    "fastmcp",
+    "pydantic",
+]
+
+[project.optional-dependencies]
+server = [
+    "semgrep",
+    "radon",
+    "pylint",
+    "fastapi",
+    "uvicorn",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+]
+
+[tool.setuptools]
+packages = ["envs.pr_review_env"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
