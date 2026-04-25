@@ -1,0 +1,6 @@
+spec_version: 1
+name: pr-review-env
+type: space
+runtime: fastapi
+app: envs.pr_review_env.server.app:app
+port: 8000

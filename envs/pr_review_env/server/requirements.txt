@@ -5,6 +5,8 @@ uvicorn
 httpx
 pyyaml
 semgrep
+ruff
 pylint
 radon
+pyright
 pydantic

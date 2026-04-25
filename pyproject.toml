@@ -18,6 +18,7 @@ dependencies = [
 server = [
     "pyyaml",
     "semgrep",
+    "ruff",
     "radon",
     "pylint",
     "fastapi",
@@ -34,6 +35,13 @@ train = [
     "transformers",
     "datasets",
     "torch",
+    # analysis tools — required for real-tool reward signal during training
+    "pyyaml",
+    "semgrep",
+    "ruff",
+    "radon",
+    "pylint",
+    "pyright",  # pip-installable TS/JS type checker; fallback when tsc not on PATH
 ]
 dev = [
     "pytest",

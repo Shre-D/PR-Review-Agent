@@ -1,0 +1,21 @@
+name: pr-review-env
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  # ── System language toolchains ──────────────────────────────────────────
+  # Covers the non-Python tasks in the 78-task bank.
+  # conda-forge provides these without root or Docker access.
+  - go              # go test ./... for Go fixtures (10 tasks)
+  - rust            # cargo check for Rust fixtures (9 tasks)
+  - openjdk         # javac for Java fixtures (8 tasks)
+  # TypeScript (8 tasks + 2 JS) is handled by pyright below — no Node needed.
+  # ── pip ─────────────────────────────────────────────────────────────────
+  - pip
+  - pip:
+    - -e ".[train]"
+    # .[train] includes: semgrep, ruff, pylint, radon, pyyaml (Python/YAML tools)
+    #                    pyright (TypeScript/JS type checker, no Node.js required)
+    #                    trl, peft, bitsandbytes, accelerate, transformers, torch

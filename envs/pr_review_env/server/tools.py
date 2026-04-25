@@ -60,9 +60,12 @@ def _backend_mode() -> str:
 
 
 def _resolve_executable(name: str) -> str | None:
-    local = REPO_ROOT / ".venv" / "bin" / name
-    if local.exists():
-        return str(local)
+    for candidate in [
+        REPO_ROOT / ".venv" / "bin" / name,
+        REPO_ROOT / ".tools" / "bin" / name,
+    ]:
+        if candidate.exists():
+            return str(candidate)
     return shutil.which(name)
 
 
@@ -426,11 +429,22 @@ def _build_and_type_findings(targets: dict[str, Any], file_types: list[str]) -> 
 
     if "typescript" in file_types or "javascript" in file_types:
         tsc = _resolve_executable("tsc")
+        pyright = _resolve_executable("pyright")
+        ts_targets = [path for path in targets["targets"] if path.suffix in {".ts", ".tsx", ".js", ".jsx"}]
         if tsc is not None and workspace is not None:
             details["tsc"] = _run_command([tsc, "--noEmit", "-p", "."], cwd=workspace, timeout_s=20)
             tools_used.append("tsc")
             if details["tsc"]["returncode"] != 0:
                 findings.append("TypeScript compilation failed for the fixture workspace.")
+        elif pyright is not None and ts_targets:
+            details["pyright"] = _run_command(
+                [pyright, "--outputjson", *[str(p) for p in ts_targets]],
+                cwd=workspace,
+                timeout_s=20,
+            )
+            tools_used.append("pyright")
+            if details["pyright"]["returncode"] != 0:
+                findings.append("Pyright reported type errors in the TypeScript/JavaScript files.")
 
     if "java" in file_types:
         javac = _resolve_executable("javac")
@@ -603,7 +617,7 @@ def check_tests(
 
     with _analysis_targets(diff_str, task_id=task_id) as targets:
         workspace = targets["workspace"]
-        if workspace is not None:
+        if workspace is not None and targets["analysis_mode"] == "fixture_backed":
             test_files = [
                 path
                 for path in workspace.rglob("*")

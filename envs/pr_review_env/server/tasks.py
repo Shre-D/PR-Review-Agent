@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import random
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 REPO_ROOT = Path(__file__).parent.parent.parent.parent
-TASKS_PATH = REPO_ROOT / "tasks" / "tasks.jsonl"
+SEED_TASKS_PATH = REPO_ROOT / "tasks" / "tasks.jsonl"
+COMPREHENSIVE_TASKS_PATH = REPO_ROOT / "tasks" / "comprehensive_tasks.jsonl"
+ALL_TASKS_PATH = REPO_ROOT / "tasks" / "all_tasks.jsonl"
+TASKS_PATH = ALL_TASKS_PATH
 
 
 @dataclass
@@ -26,9 +30,54 @@ class PRTask:
     ownership_hint: str = ""
     author_level: str = "mid"       # junior | mid | senior | lead | non_tech | unknown
     notes: list[str] = field(default_factory=list)
+    context_requirements: list[str] = field(default_factory=list)
+    expected_evidence: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+_CONTEXT_METADATA_BY_TASK_ID: dict[str, dict[str, list[str]]] = {
+    "comp_auth_jwt_removed": {
+        "context_requirements": ["auth_middleware_must_verify_jwt_signature"],
+        "expected_evidence": ["architecture_summary", "check_security", "custom_rules"],
+    },
+    "comp_py_logging_pii": {
+        "context_requirements": ["auth_flows_must_not_log_credentials_or_tokens"],
+        "expected_evidence": ["architecture_summary", "check_security", "custom_rules"],
+    },
+    "comp_django_irreversible_migration": {
+        "context_requirements": ["migrations_require_rollback_plan"],
+        "expected_evidence": ["docs/features.md", "check_quality", "check_build_and_types"],
+    },
+    "comp_k8s_resource_limits_removed": {
+        "context_requirements": ["infrastructure_must_preserve_limits_and_health_probes"],
+        "expected_evidence": ["architecture_summary", "check_config", "custom_rules"],
+    },
+    "comp_py_rate_limit_removed": {
+        "context_requirements": ["api_rate_limiting_must_remain_enforced"],
+        "expected_evidence": ["docs/features.md", "check_security", "check_config"],
+    },
+    "docker_root_user": {
+        "context_requirements": ["containers_require_non_root_runtime"],
+        "expected_evidence": ["check_config", "custom_rules"],
+    },
+    "gha_permissions_write": {
+        "context_requirements": ["github_actions_permissions_must_be_least_privilege"],
+        "expected_evidence": ["check_config", "custom_rules"],
+    },
+}
+
+
+def _apply_context_metadata(task: PRTask) -> PRTask:
+    metadata = _CONTEXT_METADATA_BY_TASK_ID.get(task.task_id)
+    if not metadata:
+        return task
+    if not task.context_requirements:
+        task.context_requirements = list(metadata["context_requirements"])
+    if not task.expected_evidence:
+        task.expected_evidence = list(metadata["expected_evidence"])
+    return task
 
 
 def _fallback_tasks() -> list[PRTask]:
@@ -316,30 +365,66 @@ index 1111111..2222222 100644
     ]
 
 
-def load_tasks(path: str | Path = TASKS_PATH) -> list[PRTask]:
+def resolve_task_path(path: str | Path | None = None) -> Path:
+    if path is None:
+        return TASKS_PATH
+    value = str(path)
+    aliases = {
+        "all": ALL_TASKS_PATH,
+        "default": ALL_TASKS_PATH,
+        "seed": SEED_TASKS_PATH,
+        "base": SEED_TASKS_PATH,
+        "comprehensive": COMPREHENSIVE_TASKS_PATH,
+        "stress": COMPREHENSIVE_TASKS_PATH,
+    }
+    return aliases.get(value, Path(value))
+
+
+def _load_jsonl_tasks(path: str | Path) -> list[PRTask]:
     task_path = Path(path)
     if not task_path.exists():
-        return _fallback_tasks()
+        return [_apply_context_metadata(task) for task in _fallback_tasks()]
 
     tasks: list[PRTask] = []
     for line in task_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         payload = json.loads(line)
-        tasks.append(PRTask(**payload))
+        tasks.append(_apply_context_metadata(PRTask(**payload)))
 
-    return tasks or _fallback_tasks()
+    return tasks or [_apply_context_metadata(task) for task in _fallback_tasks()]
+
+
+def _dedupe_tasks(tasks: Iterable[PRTask]) -> list[PRTask]:
+    seen: set[str] = set()
+    deduped: list[PRTask] = []
+    for task in tasks:
+        if task.task_id in seen:
+            continue
+        seen.add(task.task_id)
+        deduped.append(task)
+    return deduped
+
+
+def load_tasks(path: str | Path | None = None) -> list[PRTask]:
+    task_path = resolve_task_path(path)
+    if task_path == ALL_TASKS_PATH and not task_path.exists():
+        return _dedupe_tasks([
+            *_load_jsonl_tasks(SEED_TASKS_PATH),
+            *_load_jsonl_tasks(COMPREHENSIVE_TASKS_PATH),
+        ])
+    return _load_jsonl_tasks(task_path)
 
 
 def get_random_task(
-    path: str | Path = TASKS_PATH,
+    path: str | Path | None = None,
     rng: random.Random | None = None,
 ) -> PRTask:
     generator = rng or random
     return generator.choice(load_tasks(path))
 
 
-def get_task_by_id(task_id: str, path: str | Path = TASKS_PATH) -> PRTask:
+def get_task_by_id(task_id: str, path: str | Path | None = None) -> PRTask:
     for task in load_tasks(path):
         if task.task_id == task_id:
             return task
@@ -349,3 +434,121 @@ def get_task_by_id(task_id: str, path: str | Path = TASKS_PATH) -> PRTask:
 def dump_tasks(tasks: Iterable[PRTask], path: str | Path = TASKS_PATH) -> None:
     lines = [json.dumps(task.to_dict(), ensure_ascii=True) for task in tasks]
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def dump_all_tasks(path: str | Path = ALL_TASKS_PATH) -> None:
+    dump_tasks(
+        _dedupe_tasks([
+            *_load_jsonl_tasks(SEED_TASKS_PATH),
+            *_load_jsonl_tasks(COMPREHENSIVE_TASKS_PATH),
+        ]),
+        path,
+    )
+
+
+def _paths_touched(task: PRTask) -> list[str]:
+    import re
+
+    return [
+        new if new != "/dev/null" else old
+        for old, new in re.findall(r"^diff --git a/(.*?) b/(.*?)$", task.diff_str, flags=re.MULTILINE)
+    ]
+
+
+@lru_cache(maxsize=8)
+def _structural_config_for_docs(docs_dir: str) -> dict[str, Any]:
+    from .context_loader import extract_structural_config
+
+    return extract_structural_config(docs_dir)
+
+
+_LANG_TOOLS: dict[str, set[str]] = {
+    "python":     {"semgrep", "ruff", "pylint", "radon"},
+    "typescript": {"semgrep", "tsc", "eslint", "pyright"},
+    "javascript": {"semgrep", "eslint", "tsc"},
+    "java":       {"semgrep", "javac"},
+    "go":         {"semgrep", "go"},
+    "rust":       {"semgrep", "cargo"},
+    "yaml":       {"pyyaml", "semgrep"},
+}
+_FILE_TYPE_TOOLS: dict[str, set[str]] = {
+    "dockerfile":    {"semgrep"},
+    "yaml":          {"pyyaml"},
+    "github_actions":{"pyyaml"},
+    "build_manifest":{"semgrep"},
+}
+
+_REPO_BLURBS: dict[str, str] = {
+    "backend_service":  "Backend service. Correctness, security, and observability are priorities.",
+    "frontend_service": "Frontend web app. UX correctness, accessibility, and bundle size matter.",
+    "cli_tool":         "CLI tool. Robust error handling and clean exit semantics matter; no servers.",
+    "library":          "Reusable library. Public API stability, semver, and zero side effects matter.",
+    "monorepo":         "Monorepo with shared infrastructure and CI workflows.",
+    "custom":           "Single-purpose change.",
+}
+
+
+def _task_relevant_tools(task: PRTask, all_enabled: list[str]) -> list[str]:
+    relevant: set[str] = set()
+    relevant |= _LANG_TOOLS.get(task.primary_language, set())
+    for ftype in task.changed_file_types:
+        relevant |= _FILE_TYPE_TOOLS.get(ftype, set())
+    if not relevant:
+        return list(all_enabled)[:6]
+    return [tool for tool in all_enabled if tool in relevant][:6]
+
+
+def task_review_config(
+    task: PRTask,
+    docs_dir: str | Path = REPO_ROOT / "docs",
+    mode: str = "short",
+) -> dict[str, Any] | None:
+    """Return a cheap loader-derived config scoped to one task.
+
+    `empty` disables prompt context while still allowing callers to exercise
+    the loader path. `short` is intended for training speed. `full` preserves
+    the full structural config for app demos and loader analysis.
+    """
+    if mode in {"", "none", "off"}:
+        return None
+
+    config = _structural_config_for_docs(str(docs_dir))
+    config = json.loads(json.dumps(config))
+    config["extraction_method"] = f"task_{mode}_structural"
+
+    if mode == "empty":
+        config["architecture_summary"] = ""
+        config["critical_paths"] = []
+        config["custom_rules"] = []
+        config["enabled_tools"] = []
+        config["planned_tools"] = []
+        return config
+
+    if mode == "short":
+        paths = _paths_touched(task)
+        critical = []
+        for critical_path in config.get("critical_paths", []):
+            normalized = critical_path.rstrip("/")
+            if any(path == normalized or path.startswith(f"{normalized}/") for path in paths):
+                critical.append(critical_path)
+        config["critical_paths"] = critical[:4]
+        config["architecture_summary"] = _REPO_BLURBS.get(task.repo_kind, _REPO_BLURBS["custom"])
+        config["domain_priorities"] = {
+            key: value
+            for key, value in config.get("domain_priorities", {}).items()
+            if key in set(task.risk_domains)
+        }
+        risk_domains = set(task.risk_domains)
+        kept_rules = []
+        for rule in config.get("custom_rules", []):
+            domain = str(rule.get("domain", "")).strip().lower()
+            pattern = str(rule.get("pattern", ""))
+            keep_for_domain = bool(domain and domain in risk_domains)
+            keep_for_paths = any(path.startswith(pattern.split("/")[0]) for path in paths if pattern)
+            if keep_for_domain or keep_for_paths:
+                kept_rules.append(rule)
+        config["custom_rules"] = kept_rules[:5]
+        config["enabled_tools"] = _task_relevant_tools(task, config.get("enabled_tools", []))
+        config["planned_tools"] = []
+
+    return config

@@ -15,9 +15,16 @@ from ..models import (
     ReviewConfig,
 )
 from .context_loader import load_review_config
-from .grader import outcome_summary, step_reward, terminal_reward
-from .tasks import PRTask, get_random_task, get_task_by_id
+from .grader import (
+    evidence_penalties,
+    normalize_reward,
+    outcome_summary,
+    step_reward,
+    terminal_reward,
+)
+from .tasks import TASKS_PATH, PRTask, get_random_task, get_task_by_id
 from .tools import TOOL_NAMES, TOOL_REGISTRY, mcp
+from train.adaptive_router import review_requirements
 
 # Hard cap on inference-time steps; prevents runaway loops when confidence gate
 # keeps redirecting low-confidence submits.
@@ -29,7 +36,7 @@ class PRReviewEnv(MCPEnvironment):
 
     def __init__(
         self,
-        task_path: str = "tasks/tasks.jsonl",
+        task_path: str | None = None,
         seed: int | None = None,
         review_config: ReviewConfig | dict[str, Any] | None = None,
         review_config_path: str | None = None,
@@ -37,7 +44,7 @@ class PRReviewEnv(MCPEnvironment):
     ):
         super().__init__(mcp_server=mcp)
         self._tool_registry = TOOL_REGISTRY
-        self._task_path = task_path
+        self._task_path = str(task_path) if task_path is not None else str(TASKS_PATH)
         self._rng = random.Random(seed)
         self._task: PRTask | None = None
         self._state = PRReviewState()
@@ -154,9 +161,10 @@ class PRReviewEnv(MCPEnvironment):
                     f"submit_review redirected: confidence={conf_value:.2f} < {threshold:.2f}, gather more evidence"
                 )
                 reward = round(reward - 0.10, 3)
-                self._state.cumulative_reward = round(self._state.cumulative_reward + reward, 3)
+                normalized = normalize_reward(reward)
+                self._state.cumulative_reward = round(self._state.cumulative_reward + normalized, 4)
                 return self._observation(
-                    reward=reward,
+                    reward=normalized,
                     last_tool_name="submit_review",
                     last_tool_result={
                         "status": "low_confidence",
@@ -177,15 +185,21 @@ class PRReviewEnv(MCPEnvironment):
                 config=self._review_config,
                 confidence=confidence,
             )
+            reward += evidence_penalties(
+                self._task,
+                self._state.tool_results,
+                submitted_verdict,
+            )
             final_verdict = self._build_final_verdict(result_payload)
             self._done = True
             self._state.review_history.append(
                 f"terminal verdict={submitted_verdict} expected={self._task.expected_verdict}"
             )
 
-        self._state.cumulative_reward = round(self._state.cumulative_reward + reward, 3)
+        normalized = normalize_reward(reward)
+        self._state.cumulative_reward = round(self._state.cumulative_reward + normalized, 4)
         return self._observation(
-            reward=round(reward, 3),
+            reward=normalized,
             last_tool_name=action.tool_name,
             last_tool_result=result_payload,
             final_verdict=final_verdict,
@@ -216,6 +230,12 @@ class PRReviewEnv(MCPEnvironment):
     ) -> PRReviewObservation:
         assert self._task is not None
         critical_paths = self._critical_paths_touched(self._task.diff_str)
+        summary = outcome_summary(
+            self._task,
+            self._state.tool_results,
+            submitted_verdict=last_tool_result.get("verdict"),
+            config=self._review_config,
+        )
         return PRReviewObservation(
             diff_str=self._task.diff_str,
             pr_description=self._task.pr_description,
@@ -236,12 +256,20 @@ class PRReviewEnv(MCPEnvironment):
             final_verdict=final_verdict,
             done=self._done,
             reward=reward,
-            metadata=outcome_summary(
-                self._task,
-                self._state.tool_results,
-                submitted_verdict=last_tool_result.get("verdict"),
-                config=self._review_config,
-            ),
+            metadata={
+                **summary,
+                "route": review_requirements(
+                    PRReviewObservation(
+                        diff_str=self._task.diff_str,
+                        changed_file_types=list(self._task.changed_file_types),
+                        tools_called=list(self._state.tools_called_this_episode),
+                        step_count=self._state.step_count,
+                        author_context=AuthorContext(level=getattr(self._task, "author_level", "mid")),
+                        metadata=summary,
+                    ),
+                    self._review_config,
+                ),
+            },
         )
 
     def _critical_paths_touched(self, diff_str: str) -> list[str]:

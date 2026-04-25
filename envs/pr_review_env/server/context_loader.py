@@ -103,6 +103,9 @@ def extract_structural_config(docs_dir: str | Path) -> dict[str, Any]:
         if line.startswith("## Planned External Tools"):
             section = "planned_tools"
             continue
+        if line.startswith("## Custom Rules"):
+            section = "custom_rules"
+            continue
         if line.startswith("##"):
             section = None
             continue
@@ -140,6 +143,17 @@ def extract_structural_config(docs_dir: str | Path) -> dict[str, Any]:
             config["enabled_tools"].append(line.lstrip("- ").strip())
         elif section == "planned_tools" and line.startswith("-"):
             config["planned_tools"].append(line.lstrip("- ").strip())
+        elif section == "custom_rules" and "|" in line and not set(line.replace("|", "").strip()) <= {"-", ":"}:
+            parts = [part.strip() for part in line.split("|") if part.strip()]
+            if len(parts) == 4 and parts[0].lower() != "domain":
+                config["custom_rules"].append(
+                    {
+                        "domain": parts[0],
+                        "pattern": parts[1],
+                        "severity": parts[2],
+                        "message": parts[3],
+                    }
+                )
 
     return ReviewConfig.model_validate(config).model_dump()
 
