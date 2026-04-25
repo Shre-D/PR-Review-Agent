@@ -122,6 +122,7 @@ class PRReviewEnv(MCPEnvironment):
 
         result_payload = self._extract_result_payload(base_obs)
         history_line = action.tool_name
+        is_terminal = action.tool_name in {"submit_review", "escalate"}
         if base_obs.error is not None:
             result_payload = {
                 "tool": action.tool_name,
@@ -129,10 +130,16 @@ class PRReviewEnv(MCPEnvironment):
                 "error": base_obs.error.message,
             }
             history_line = f"{action.tool_name}: error={base_obs.error.message}"
-        else:
+        elif not is_terminal:
+            # Terminal calls are not evidence; they go through final_verdict.
+            # Storing them in tool_results dilutes aggregate_score and can
+            # let `len(tool_results) >= min_tools` pass with a single real
+            # evidence tool plus submit_review.
             self._state.tool_results[action.tool_name] = result_payload
             score = result_payload.get("score")
             history_line = f"{action.tool_name}: score={score}"
+        else:
+            history_line = f"{action.tool_name}: terminal"
 
         self._state.review_history.append(history_line)
         reward = step_reward(
@@ -178,12 +185,14 @@ class PRReviewEnv(MCPEnvironment):
         if action.tool_name in {"submit_review", "escalate"}:
             submitted_verdict = result_payload.get("verdict", action.tool_name)
             confidence = result_payload.get("confidence")
+            route = self._route_requirements()
             reward += terminal_reward(
                 self._task,
                 submitted_verdict,
                 self._state.tool_results,
                 config=self._review_config,
                 confidence=confidence,
+                min_tools=int(route["min_tools"]),
             )
             reward += evidence_penalties(
                 self._task,
@@ -258,18 +267,28 @@ class PRReviewEnv(MCPEnvironment):
             reward=reward,
             metadata={
                 **summary,
-                "route": review_requirements(
-                    PRReviewObservation(
-                        diff_str=self._task.diff_str,
-                        changed_file_types=list(self._task.changed_file_types),
-                        tools_called=list(self._state.tools_called_this_episode),
-                        step_count=self._state.step_count,
-                        author_context=AuthorContext(level=getattr(self._task, "author_level", "mid")),
-                        metadata=summary,
-                    ),
-                    self._review_config,
-                ),
+                "route": self._route_requirements(summary),
             },
+        )
+
+    def _route_requirements(self, summary: dict[str, Any] | None = None) -> dict[str, Any]:
+        assert self._task is not None
+        critical_paths = self._critical_paths_touched(self._task.diff_str)
+        return review_requirements(
+            PRReviewObservation(
+                diff_str=self._task.diff_str,
+                changed_file_types=list(self._task.changed_file_types),
+                tools_called=list(self._state.tools_called_this_episode),
+                step_count=self._state.step_count,
+                author_context=AuthorContext(level=getattr(self._task, "author_level", "mid")),
+                critical_paths_touched=critical_paths,
+                metadata=summary or outcome_summary(
+                    self._task,
+                    self._state.tool_results,
+                    config=self._review_config,
+                ),
+            ),
+            self._review_config,
         )
 
     def _critical_paths_touched(self, diff_str: str) -> list[str]:

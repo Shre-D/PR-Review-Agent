@@ -31,6 +31,20 @@ RAW_MAX = 1.51
 RAW_FLOOR = RAW_MIN
 RAW_NEAR_FLOOR = -2.55
 
+_TERMINAL_TOOLS = {"submit_review", "escalate"}
+
+
+def _evidence_only(tool_results: dict[str, dict]) -> dict[str, dict]:
+    """Strip terminal tool entries before scoring/counting evidence.
+
+    Terminal calls (`submit_review`, `escalate`) are not evidence — they're the
+    verdict event. Including them in `tool_results` would let `len(...) >=
+    min_tools` pass with a single real evidence tool plus the submit, and
+    would dilute `aggregate_tool_scores` because terminal payloads carry no
+    `score` field.
+    """
+    return {tool: result for tool, result in tool_results.items() if tool not in _TERMINAL_TOOLS}
+
 # Maps each valid risk_domain to the tools that cover it
 DOMAIN_TO_TOOLS: dict[str, set[str]] = {
     "security": {"check_security"},
@@ -131,6 +145,7 @@ def aggregate_tool_scores(
         config = task
         task = None
 
+    tool_results = _evidence_only(tool_results)
     total = 0.0
     used_weight = 0.0
     relevant = relevant_tools(task, config) if task is not None else set()
@@ -215,18 +230,19 @@ def terminal_reward(
     tool_results: dict[str, dict[str, Any]],
     config: ReviewConfig | None = None,
     confidence: float | None = None,
+    min_tools: int | None = None,
 ) -> float:
     """Reward on submit_review or escalate.
-    Correct + >=1 supportive tool -> 1.0 + evidence alignment bonus
-    Correct + no supportive tools -> 0.35
-    escalate when expected reject/request_changes -> 0.10
-    Wrong verdict -> -0.55
+    Correct + route-sufficient relevant evidence -> high reward.
+    Correct but early/unsupported submit -> low reward.
+    Wrong verdict -> near-floor reward.
     """
     normalized = submitted_verdict.strip().lower()
     expected = task.expected_verdict.strip().lower()
-    supportive_tools = len(set(tool_results) & relevant_tools(task, config))
-    min_tools = route_min_tools(task, config)
-    early_submit = len(tool_results) < min_tools
+    evidence_results = _evidence_only(tool_results)
+    supportive_tools = len(set(evidence_results) & relevant_tools(task, config))
+    required_tools = min_tools if min_tools is not None else route_min_tools(task, config)
+    early_submit = len(evidence_results) < required_tools
 
     if normalized == expected:
         if early_submit:
@@ -239,6 +255,31 @@ def terminal_reward(
         return -0.8
 
     return -2.65
+
+
+def get_scoring_logic() -> dict[str, Any]:
+    """Returns the constants and weights used for scoring, for UI transparency."""
+    return {
+        "tool_weights": TOOL_WEIGHTS,
+        "relevant_weight_multiplier": 1.5,
+        "base_step_reward": 0.05,
+        "relevance_bonus": 0.08,
+        "duplicate_raw_reward": RAW_NEAR_FLOOR,
+        "efficiency_decay_step": -0.03,
+        "terminal_correct_base": 0.95,
+        "terminal_correct_early_submit": -2.10,
+        "terminal_correct_no_supportive_tool": -1.45,
+        "terminal_escalate_high_risk": -0.80,
+        "terminal_wrong": -2.65,
+        "evidence_alignment_max": 0.25,
+        "tool_penalties": {
+            "check_security": 0.45,
+            "check_quality": 0.16,
+            "check_build_and_types": 0.14,
+            "check_tests": 0.12,
+            "check_config": 0.30,
+        },
+    }
 
 
 def _severity_counts(result: dict[str, Any]) -> dict[str, int]:
@@ -269,6 +310,7 @@ def evidence_penalties(
     """Episode-end penalties for contradictions between evidence and verdict."""
     verdict = submitted_verdict.strip().lower()
     penalty = 0.0
+    tool_results = _evidence_only(tool_results)
     severities = [_severity_counts(result) for result in tool_results.values()]
     total_critical = sum(item.get("critical", 0) for item in severities)
     total_warnings = sum(item.get("warning", 0) for item in severities)

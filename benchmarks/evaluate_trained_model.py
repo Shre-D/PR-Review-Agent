@@ -16,7 +16,7 @@ from envs.pr_review_env.server.context_loader import load_review_config
 from envs.pr_review_env.server.pr_review_env import PRReviewEnv
 from envs.pr_review_env.server.tasks import PRTask, load_tasks, task_review_config
 from train.adaptive_router import review_requirements
-from train.grpo_train import _action_with_state_args, build_obs_prompt, parse_action
+from train.grpo_train import SYSTEM_PROMPT, _action_with_state_args, build_obs_prompt, parse_action
 from train.train_config import TrainingConfig
 
 
@@ -35,8 +35,28 @@ def checkpoint_ready(path: str | Path) -> bool:
     return any((checkpoint / name).exists() for name in expected)
 
 
-def select_tasks(tasks_file: str, limit: int = 0) -> list[PRTask]:
+def select_tasks(
+    tasks_file: str,
+    limit: int = 0,
+    holdout_file: str | None = None,
+    mode: str = "all",
+) -> list[PRTask]:
+    """mode: 'all' | 'holdout_only' | 'train_only'. Holdout is the set of
+    task_ids in `holdout_file` (one per line, '#' comments allowed)."""
     tasks = load_tasks(tasks_file)
+    holdout: set[str] = set()
+    if holdout_file:
+        path = Path(holdout_file)
+        if path.exists():
+            holdout = {
+                line.strip()
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            }
+    if mode == "holdout_only" and holdout:
+        tasks = [task for task in tasks if task.task_id in holdout]
+    elif mode == "train_only" and holdout:
+        tasks = [task for task in tasks if task.task_id not in holdout]
     if limit and limit > 0:
         return tasks[:limit]
     return tasks
@@ -44,14 +64,7 @@ def select_tasks(tasks_file: str, limit: int = 0) -> list[PRTask]:
 
 def build_prompt_messages(obs: PRReviewObservation, review_config: dict | None = None) -> list[dict[str, str]]:
     return [
-        {
-            "role": "system",
-            "content": (
-                "You are a code reviewer. Output exactly one JSON tool call and no prose.\n"
-                "Tools: check_security, check_quality, check_build_and_types, check_tests, "
-                "check_config, submit_review, escalate."
-            ),
-        },
+        {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": build_obs_prompt(obs, review_config)},
     ]
 
@@ -164,12 +177,18 @@ def run_episode(
         ),
         "invalid_actions": invalid_actions,
         "early_submit": bool(
-            obs.final_verdict is not None and len(obs.tool_results) < int(route["min_tools"])
+            obs.final_verdict is not None
+            and len({k for k in obs.tool_results if k not in {"submit_review", "escalate"}})
+            < int(route["min_tools"])
         ),
         "over_budget": not obs.done,
         "evidence_backed_verdict": bool(
             obs.final_verdict is not None
-            and len(set(obs.tool_results) & set(obs.metadata.get("relevant_tools", []))) > 0
+            and len(
+                {k for k in obs.tool_results if k not in {"submit_review", "escalate"}}
+                & set(obs.metadata.get("relevant_tools", []))
+            )
+            > 0
         ),
         "context_dependent": bool(getattr(task, "context_requirements", [])),
     }
@@ -259,6 +278,17 @@ def main() -> None:
         default="short",
         choices=["short", "empty", "full", "off", "none"],
     )
+    parser.add_argument(
+        "--holdout-file",
+        default=str(ROOT / "tasks" / "holdout_ids.txt"),
+        help="Holdout task_id list. Used with --eval-mode.",
+    )
+    parser.add_argument(
+        "--eval-mode",
+        default="all",
+        choices=["all", "holdout_only", "train_only"],
+        help="Slice of the bank to evaluate. 'all' = full bank; 'holdout_only' = unseen tasks; 'train_only' = excludes holdout.",
+    )
     args = parser.parse_args()
 
     if not checkpoint_ready(args.checkpoint):
@@ -280,12 +310,13 @@ def main() -> None:
     cfg.task_loader_mode = args.task_loader_mode
     review_config = load_review_config(args.review_config)
     model, tokenizer = load_policy_model(args.base_model, args.checkpoint)
-    tasks = select_tasks(args.tasks_file, args.limit)
+    tasks = select_tasks(args.tasks_file, args.limit, args.holdout_file, args.eval_mode)
 
     results = [run_episode(model, tokenizer, task, cfg, review_config) for task in tasks]
-    summary = summarize_results(results, policy_name="trained_slm")
+    summary = summarize_results(results, policy_name=f"trained_slm_{args.eval_mode}")
     summary["checkpoint"] = args.checkpoint
     summary["base_model"] = args.base_model
+    summary["eval_mode"] = args.eval_mode
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

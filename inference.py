@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from envs.pr_review_env.models import PRReviewAction
 from envs.pr_review_env.server.pr_review_env import PRReviewEnv
 from envs.pr_review_env.server.tasks import load_tasks, task_review_config
 from benchmarks.run_baselines import heuristic_policy, decide_final_verdict
@@ -76,17 +77,17 @@ def load_model(model_id: str, checkpoint: str | None = None):
     return model, tokenizer
 
 
-def build_messages(obs):
+def build_messages(obs, review_config: dict | None = None):
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": build_obs_prompt(obs)}
+        {"role": "user", "content": build_obs_prompt(obs, review_config)}
     ]
 
 
-def run_qwen_step(model, tokenizer, obs):
+def run_qwen_step(model, tokenizer, obs, review_config: dict | None = None):
     import torch
     
-    messages = build_messages(obs)
+    messages = build_messages(obs, review_config)
     
     input_ids = tokenizer.apply_chat_template(
         messages, 
@@ -107,11 +108,11 @@ def run_qwen_step(model, tokenizer, obs):
     return parse_action(response_text)
 
 
-def run_ollama_step(model_name: str, obs, host: str | None = None):
+def run_ollama_step(model_name: str, obs, review_config: dict | None = None, host: str | None = None):
     host = (host or os.getenv("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST).rstrip("/")
     payload = {
         "model": model_name,
-        "messages": build_messages(obs),
+        "messages": build_messages(obs, review_config),
         "stream": False,
         "options": {
             "temperature": 0,
@@ -144,6 +145,38 @@ def _action_for_log(action, hide_diff: bool) -> dict:
         payload["arguments"] = dict(payload["arguments"])
         payload["arguments"]["diff_str"] = "<hidden>"
     return payload
+
+
+def _evidence_tools(obs) -> list[str]:
+    return [tool for tool in obs.tools_called if tool not in {"submit_review", "escalate"}]
+
+
+def _next_required_evidence_action(obs, route: dict) -> PRReviewAction:
+    called = set(_evidence_tools(obs))
+    relevant = list(obs.metadata.get("relevant_tools", [])) if isinstance(obs.metadata, dict) else []
+    candidates: list[str] = []
+    if route.get("requires_security") and "check_security" not in called:
+        candidates.append("check_security")
+    candidates.extend(tool for tool in relevant if tool not in candidates)
+    candidates.extend(
+        tool
+        for tool in ["check_quality", "check_config", "check_build_and_types", "check_tests", "check_security"]
+        if tool not in candidates
+    )
+    for tool_name in candidates:
+        if tool_name in obs.available_tools and tool_name not in called:
+            return _action_with_state_args(PRReviewAction(tool_name=tool_name, arguments={}), obs)
+    return _action_with_state_args(PRReviewAction(tool_name="check_quality", arguments={}), obs)
+
+
+def _apply_min_evidence_gate(action: PRReviewAction, obs, route: dict) -> tuple[PRReviewAction, bool]:
+    if action.tool_name not in {"submit_review", "escalate"}:
+        return action, False
+    if len(_evidence_tools(obs)) >= int(route["min_tools"]):
+        return action, False
+    if obs.step_count >= int(route["max_steps"]):
+        return action, False
+    return _next_required_evidence_action(obs, route), True
 
 
 def run_inference():
@@ -198,6 +231,7 @@ def run_inference():
 
         while not observation.done and step_count < max_steps:
             step_count += 1
+            gated = False
             if is_heuristic:
                 if heuristic_index < len(heuristic_actions):
                     action = _action_with_state_args(heuristic_actions[heuristic_index], observation)
@@ -206,15 +240,17 @@ def run_inference():
                     action = decide_final_verdict(observation)
             else:
                 if is_ollama:
-                    raw_action = run_ollama_step(ollama_model_name(args.model), observation)
+                    raw_action = run_ollama_step(ollama_model_name(args.model), observation, task_config)
                 else:
-                    raw_action = run_qwen_step(model, tokenizer, observation)
+                    raw_action = run_qwen_step(model, tokenizer, observation, task_config)
                 action = _action_with_state_args(raw_action, observation)
+                action, gated = _apply_min_evidence_gate(action, observation, route)
 
             observation = env.step(action)
             reward = observation.reward or 0.0
             if args.output_format == "trace":
-                print(f"[STEP] step={step_count} action={json.dumps(_action_for_log(action, args.hide_diff))} reward={reward}")
+                gate_flag = " evidence_gate=1" if gated else ""
+                print(f"[STEP] step={step_count} action={json.dumps(_action_for_log(action, args.hide_diff))} reward={reward}{gate_flag}")
                 sys.stdout.flush()
 
         # Ensure we eventually submit if model didn't

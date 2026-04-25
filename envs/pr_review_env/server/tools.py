@@ -299,6 +299,12 @@ def _heuristic_findings(diff_str: str) -> dict[str, list[str]]:
     elif ".env.production" in lower or "secrets/" in lower:
         findings["config"].append("Ignore rules may hide deployment secrets or critical config.")
 
+    # Lightweight Python syntax check skipped here on purpose:
+    # `_candidate_source` only joins added "+" lines, which is not a valid
+    # standalone module (e.g. adding `except TimeoutError:` to an existing
+    # try block produces an isolated except that fails to parse). Real
+    # syntax checking requires fixture-backed full files; that path is
+    # exercised by `_python_quality_scan` via ruff/pylint when available.
     return findings
 
 

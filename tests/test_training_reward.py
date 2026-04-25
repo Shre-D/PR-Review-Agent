@@ -34,13 +34,21 @@ def test_score_completion_uses_live_environment_reward():
 
 
 def test_score_completion_replays_prior_state():
+    # Replay two evidence tools so min_tools (=2 for SMALL tier) is satisfied
+    # by real evidence, not by the (no-longer-stored) terminal call.
     replay = [
         {
             "type": "call_tool",
             "tool_name": "check_security",
             "arguments": {},
             "metadata": {},
-        }
+        },
+        {
+            "type": "call_tool",
+            "tool_name": "check_quality",
+            "arguments": {},
+            "metadata": {},
+        },
     ]
     unsupported_reward = score_completion_locally(
         '{"tool_name":"submit_review","arguments":{"verdict":"reject","confidence":0.9,"reasoning":"security evidence"}}',

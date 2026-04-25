@@ -88,10 +88,15 @@ def evaluate_policy(
             - len(set(t for t in observation.tools_called if t not in {"submit_review", "escalate"})),
         )
         invalid_total += invalid_actions
-        early_submit_total += int(len(observation.tool_results) < int(route["min_tools"]))
+        evidence_tool_results = {
+            tool: result
+            for tool, result in observation.tool_results.items()
+            if tool not in {"submit_review", "escalate"}
+        }
+        early_submit_total += int(len(evidence_tool_results) < int(route["min_tools"]))
         over_budget_total += int(observation.step_count > int(route["max_steps"]))
         evidence_backed_total += int(
-            len(set(observation.tool_results) & set(observation.metadata.get("relevant_tools", []))) > 0
+            len(set(evidence_tool_results) & set(observation.metadata.get("relevant_tools", []))) > 0
         )
         steps_by_tier[route["tier"]].append(observation.step_count)
         non_terminal = [t for t in observation.tools_called if t not in {"submit_review", "escalate"}]
