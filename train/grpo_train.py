@@ -193,7 +193,10 @@ def training_prompt(obs: PRReviewObservation, review_config: dict | None = None)
                 "Routing rule: collect at least "
                 f"{route['min_tools']} evidence tools before any terminal verdict."
             ),
-            "Prefer an evidence tool first. Final verdicts before the evidence budget are rejected.",
+            (
+                "Prefer an evidence tool first. Early final verdicts are redirected "
+                "for a short evidence-gathering window before they can end the review."
+            ),
             "Output exactly one JSON tool call.",
         ]
     )

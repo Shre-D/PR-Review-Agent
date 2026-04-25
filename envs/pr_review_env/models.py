@@ -120,3 +120,4 @@ class PRReviewState(State):
     tool_results: dict[str, dict[str, Any]] = Field(default_factory=dict)
     review_history: list[str] = Field(default_factory=list)
     cumulative_reward: float = 0.0
+    early_submit_redirects: int = 0

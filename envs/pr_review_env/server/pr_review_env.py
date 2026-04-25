@@ -18,6 +18,7 @@ from .context_loader import load_review_config
 from .grader import (
     evidence_penalties,
     normalize_reward,
+    reward_near_floor,
     outcome_summary,
     step_reward,
     terminal_reward,
@@ -29,6 +30,7 @@ from train.adaptive_router import review_requirements
 # Hard cap on inference-time steps; prevents runaway loops when confidence gate
 # keeps redirecting low-confidence submits.
 _MAX_INFERENCE_STEPS = 8
+_EARLY_SUBMIT_PATIENCE_STEPS = 2
 
 
 class PRReviewEnv(MCPEnvironment):
@@ -85,6 +87,7 @@ class PRReviewEnv(MCPEnvironment):
             review_history=[],
             cumulative_reward=0.0,
             step_count=0,
+            early_submit_redirects=0,
         )
         return self._observation(
             reward=0.0,
@@ -186,6 +189,29 @@ class PRReviewEnv(MCPEnvironment):
             submitted_verdict = result_payload.get("verdict", action.tool_name)
             confidence = result_payload.get("confidence")
             route = self._route_requirements()
+            early_submit = len(self._state.tool_results) < int(route["min_tools"])
+            if early_submit and self._state.early_submit_redirects < _EARLY_SUBMIT_PATIENCE_STEPS:
+                self._state.early_submit_redirects += 1
+                self._state.review_history.append(
+                    "terminal verdict="
+                    f"{submitted_verdict} redirected: collected {len(self._state.tool_results)}"
+                    f"/{route['min_tools']} evidence tools"
+                )
+                reward = reward_near_floor()
+                self._state.cumulative_reward = round(self._state.cumulative_reward + reward, 4)
+                return self._observation(
+                    reward=reward,
+                    last_tool_name=action.tool_name,
+                    last_tool_result={
+                        **result_payload,
+                        "status": "redirected_for_more_evidence",
+                        "redirects_used": self._state.early_submit_redirects,
+                        "redirects_remaining": max(
+                            0, _EARLY_SUBMIT_PATIENCE_STEPS - self._state.early_submit_redirects
+                        ),
+                        "min_tools": int(route["min_tools"]),
+                    },
+                )
             reward += terminal_reward(
                 self._task,
                 submitted_verdict,
