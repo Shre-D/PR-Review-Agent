@@ -50,7 +50,31 @@ def main() -> None:
         shutil.rmtree(repo_dir)
 
     run(["git", "clone", "--depth", "1", "--branch", args.repo_ref, args.repo_url, str(repo_dir)])
-    run(["uv", "pip", "install", "--python", sys.executable, "-e", ".[server,train,dev]", "matplotlib", "pandas"], cwd=repo_dir)
+    run(["uv", "pip", "install", "--python", sys.executable, "-e", ".", "--no-deps"], cwd=repo_dir)
+    run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "pydantic",
+            "httpx",
+            "fastapi",
+            "uvicorn",
+            "pyyaml",
+            "trl",
+            "peft",
+            "bitsandbytes",
+            "accelerate",
+            "transformers",
+            "datasets",
+            "torch",
+            "matplotlib",
+            "pandas",
+        ],
+        cwd=repo_dir,
+    )
     run(["python", "tasks/build_task_bank.py", "--print-summary"], cwd=repo_dir)
 
     env = {**os.environ, "PR_REVIEW_TOOL_BACKEND": "heuristic"}
