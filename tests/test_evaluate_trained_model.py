@@ -1,8 +1,11 @@
 from pathlib import Path
 
+import pytest
+
 from benchmarks.evaluate_trained_model import (
     build_prompt_messages,
     checkpoint_ready,
+    generate_action_text,
     select_tasks,
     summarize_results,
 )
@@ -64,3 +67,46 @@ def test_summarize_results_computes_accuracy_and_return():
     assert summary["accuracy"] == 0.5
     assert summary["mean_episode_return"] == 0.25
     assert summary["by_language"]["python"]["episodes"] == 2
+
+
+def test_generate_action_text_accepts_batch_encoding_output():
+    torch = pytest.importorskip("torch")
+
+    class BatchEncodingLike(dict):
+        def to(self, device):
+            return BatchEncodingLike({key: value.to(device) for key, value in self.items()})
+
+    class FakeTokenizer:
+        eos_token_id = 0
+
+        def apply_chat_template(self, messages, add_generation_prompt, return_tensors):
+            return BatchEncodingLike(
+                {
+                    "input_ids": torch.tensor([[1, 2, 3]]),
+                    "attention_mask": torch.tensor([[1, 1, 1]]),
+                }
+            )
+
+        def decode(self, token_ids, skip_special_tokens):
+            assert token_ids.tolist() == [4, 5]
+            return "generated action"
+
+    class FakeModel:
+        def __init__(self):
+            self.param = torch.nn.Parameter(torch.empty(0))
+
+        def parameters(self):
+            return iter([self.param])
+
+        def generate(self, **kwargs):
+            assert set(kwargs) >= {"input_ids", "attention_mask"}
+            return torch.cat([kwargs["input_ids"], torch.tensor([[4, 5]])], dim=1)
+
+    text = generate_action_text(
+        FakeModel(),
+        FakeTokenizer(),
+        [{"role": "user", "content": "pick a tool"}],
+        max_new_tokens=8,
+    )
+
+    assert text == "generated action"

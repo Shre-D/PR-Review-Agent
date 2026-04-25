@@ -72,15 +72,25 @@ def build_prompt_messages(obs: PRReviewObservation, review_config: dict | None =
 def generate_action_text(model, tokenizer, messages: list[dict[str, str]], max_new_tokens: int) -> str:
     import torch
 
-    input_ids = tokenizer.apply_chat_template(
+    encoded = tokenizer.apply_chat_template(
         messages,
         add_generation_prompt=True,
         return_tensors="pt",
-    ).to(next(model.parameters()).device)
+    )
+    device = next(model.parameters()).device
+    if hasattr(encoded, "to"):
+        encoded = encoded.to(device)
+
+    if isinstance(encoded, dict):
+        model_inputs = dict(encoded)
+        input_ids = model_inputs["input_ids"]
+    else:
+        input_ids = encoded
+        model_inputs = {"input_ids": input_ids}
 
     with torch.no_grad():
         output_ids = model.generate(
-            input_ids,
+            **model_inputs,
             max_new_tokens=max_new_tokens,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,

@@ -25,6 +25,19 @@ def run(command: list[str], cwd: Path | None = None, env: dict[str, str] | None 
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
+def upload_file_if_exists(api: HfApi, repo_id: str, source: Path, destination: str) -> None:
+    if not source.exists():
+        print(f"Skipping missing artifact: {source}", flush=True)
+        return
+    api.upload_file(
+        repo_id=repo_id,
+        repo_type="model",
+        path_or_fileobj=str(source),
+        path_in_repo=destination,
+    )
+    print(f"Uploaded artifact: {destination}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train PR Review GRPO on Hugging Face Jobs.")
     parser.add_argument("--repo-url", default=os.getenv("REPO_URL", ""))
@@ -34,6 +47,7 @@ def main() -> None:
     parser.add_argument("--epochs", default=os.getenv("EPOCHS", "3"))
     parser.add_argument("--task-limit", default=os.getenv("TASK_LIMIT", "78"))
     parser.add_argument("--num-generations", default=os.getenv("NUM_GENERATIONS", "8"))
+    parser.add_argument("--eval-limit", default=os.getenv("EVAL_LIMIT", "0"))
     parser.add_argument("--task-loader-mode", default=os.getenv("TASK_LOADER_MODE", "short"))
     parser.add_argument("--workdir", default=os.getenv("WORKDIR", "/tmp/pr-review-agent"))
     args = parser.parse_args()
@@ -81,6 +95,7 @@ def main() -> None:
     output_dir = repo_dir / "grpo_checkpoint"
     rewards_dir = repo_dir / "rewards"
     rewards_dir.mkdir(exist_ok=True)
+    api = HfApi()
 
     run(
         [
@@ -106,6 +121,12 @@ def main() -> None:
         cwd=repo_dir,
         env=env,
     )
+    upload_file_if_exists(
+        api,
+        args.hub_model_id,
+        output_dir / "training_log.csv",
+        "artifacts/training_log.csv",
+    )
     run(
         [
             "python",
@@ -120,26 +141,34 @@ def main() -> None:
         cwd=repo_dir,
         env=env,
     )
+    upload_file_if_exists(
+        api,
+        args.hub_model_id,
+        rewards_dir / "baseline_eval.json",
+        "artifacts/rewards/baseline_eval.json",
+    )
+    trained_eval_command = [
+        "python",
+        "benchmarks/evaluate_trained_model.py",
+        "--checkpoint",
+        str(output_dir),
+        "--preset",
+        args.preset,
+        "--task-bank",
+        "all",
+        "--task-loader-mode",
+        args.task_loader_mode,
+        "--output",
+        str(rewards_dir / "trained_eval.json"),
+    ]
+    if int(args.eval_limit) > 0:
+        trained_eval_command.extend(["--limit", args.eval_limit])
     run(
-        [
-            "python",
-            "benchmarks/evaluate_trained_model.py",
-            "--checkpoint",
-            str(output_dir),
-            "--preset",
-            args.preset,
-            "--task-bank",
-            "all",
-            "--task-loader-mode",
-            args.task_loader_mode,
-            "--output",
-            str(rewards_dir / "trained_eval.json"),
-        ],
+        trained_eval_command,
         cwd=repo_dir,
         env=env,
     )
 
-    api = HfApi()
     api.upload_folder(
         repo_id=args.hub_model_id,
         repo_type="model",
