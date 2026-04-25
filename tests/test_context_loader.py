@@ -10,3 +10,4 @@ def test_extract_structural_config_reads_review_tool_doc():
     assert config["author_depth"]["junior"] == 1.5
     assert "semgrep" in config["enabled_tools"]
     assert config["architecture_summary"]
+    assert any(rule["domain"] == "security" for rule in config["custom_rules"])

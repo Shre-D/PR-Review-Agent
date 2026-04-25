@@ -11,7 +11,7 @@ from train.train_config import TrainingConfig
 def test_score_completion_penalizes_malformed_output():
     reward = score_completion_locally("not json", "py_sql_injection")
 
-    assert reward == -0.75
+    assert reward == 0.01
 
 
 def test_action_with_state_args_adds_diff_for_analysis_tool():
@@ -42,13 +42,19 @@ def test_score_completion_replays_prior_state():
             "metadata": {},
         }
     ]
+    unsupported_reward = score_completion_locally(
+        '{"tool_name":"submit_review","arguments":{"verdict":"reject","confidence":0.9,"reasoning":"security evidence"}}',
+        "py_sql_injection",
+    )
     reward = score_completion_locally(
         '{"tool_name":"submit_review","arguments":{"verdict":"reject","confidence":0.9,"reasoning":"security evidence"}}',
         "py_sql_injection",
         replay_actions=replay,
     )
 
-    assert reward > 1.0
+    # score_completion_locally returns the normalized environment reward.
+    # Evidence-backed submits should still beat unsupported correct verdicts.
+    assert reward > unsupported_reward
 
 
 def test_reward_func_scores_batch_with_task_ids():
@@ -63,7 +69,7 @@ def test_reward_func_scores_batch_with_task_ids():
     )
 
     assert rewards[0] > 0
-    assert rewards[1] == -0.75
+    assert rewards[1] == 0.01
 
 
 def test_build_training_state_rows_contains_replayable_state():

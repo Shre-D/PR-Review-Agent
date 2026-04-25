@@ -1,120 +1,125 @@
----
-title: "Inside the OpenEnv PR Review Environment"
-date: 2026-04-24
-tags: [openenv, fastapi, mcp, architecture]
----
+# Architecture
 
-# Inside the OpenEnv PR Review Environment
+The project has four main layers:
 
-The PR Review Environment is built on OpenEnv — a client-server framework for reinforcement learning environments. Unlike gym-style wrappers, OpenEnv environments are real HTTP servers running inside Docker containers. That design decision has consequences that ripple through the whole system.
+1. task bank
+2. OpenEnv-compatible environment
+3. review tools and reward logic
+4. training and evaluation scripts
 
-## Why Client-Server?
+The policy model sits outside the environment. It receives observations and
+emits JSON tool calls. The environment owns task state, tool execution, reward
+calculation, and terminal verdict scoring.
 
-A gym environment lives in the same process as your training loop. That works fine for toy environments, but breaks down for code review:
+## Component Map
 
-- Analysis tools (semgrep, pylint, cargo check) need their own binaries and dependencies
-- Fixture-backed workspaces need filesystem access
-- You want to scale training workers independently from environment workers
-- You want to deploy the environment to HuggingFace Spaces without bundling your training infra
+| Component | Path | Role |
+|---|---|---|
+| Typed models | `envs/pr_review_env/models.py` | Pydantic action, observation, state, verdict, and config models |
+| Environment | `envs/pr_review_env/server/pr_review_env.py` | Reset/step loop, state tracking, reward integration |
+| Tools | `envs/pr_review_env/server/tools.py` | Security, quality, build/type, test, config, submit, escalate tools |
+| Grader | `envs/pr_review_env/server/grader.py` | Per-step reward, terminal reward, evidence penalties |
+| Task loader | `envs/pr_review_env/server/tasks.py` | Task aliases, JSONL loading, combined bank, per-task loader config |
+| Context loader | `envs/pr_review_env/server/context_loader.py` | Deterministic structural config extraction from docs |
+| Training | `train/grpo_train.py` | GRPO/QLoRA training with online environment reward |
+| Evaluation | `benchmarks/evaluate_trained_model.py` | Runs a LoRA checkpoint against a task bank |
+| Baselines | `benchmarks/evaluate_baselines.py` | Random and heuristic policies |
 
-OpenEnv solves this by making the environment a FastAPI server. Training loops talk to it over HTTP. The environment can run on different hardware, be replicated, or be shared across multiple training runs.
+## Episode Flow
 
-## The Server Side
+An episode starts with `PRReviewEnv.reset(task_id=...)`.
 
-The environment server has four key components:
-
-### `pr_review_env.py` — MCPEnvironment Subclass
-
-```python
-class PRReviewEnv(MCPEnvironment):
-    def reset(self, task_id=None, seed=None, ...) -> PRReviewObservation:
-        self._task = get_random_task() if not task_id else get_task_by_id(task_id)
-        self._state = PRReviewState(task_id=..., expected_verdict=...)
-        return self._observation(reward=0.0, ...)
-
-    def step(self, action: PRReviewAction) -> PRReviewObservation:
-        # Route to tool, compute reward, update state
-        result = super().step(action)  # MCPEnvironment handles tool routing
-        reward = step_reward(self._task, action.tool_name, ...)
-        if action.tool_name in {"submit_review", "escalate"}:
-            reward += terminal_reward(self._task, verdict, tool_results)
-            self._done = True
-        return self._observation(reward=reward, ...)
-```
-
-The `MCPEnvironment` base class handles the routing: when the agent calls `check_security`, it dispatches to the `check_security` function registered in the FastMCP server. The environment wraps the raw result with reward computation and state tracking.
-
-### `tools.py` — FastMCP Tool Definitions
-
-Each tool is a Python function decorated with `@mcp.tool`:
+The environment loads a `PRTask` and returns a `PRReviewObservation`:
 
 ```python
-@mcp.tool
-def check_security(diff_str: str, task_id: str = "") -> dict:
-    """Run security-focused review across supported code and config diffs."""
-    heuristics = _heuristic_findings(diff_str)["security"]
-    with _analysis_targets(diff_str, task_id=task_id) as targets:
-        semgrep_payload, semgrep_findings = _semgrep_scan(targets)
-        combined = list(heuristics) + semgrep_findings
-        return {
-            "score": _score_from_findings(combined, penalty=0.2),
-            "findings": combined,
-            ...
-        }
+PRReviewObservation(
+    diff_str="...",
+    pr_description="...",
+    primary_language="python",
+    changed_file_types=["python"],
+    available_tools=["check_security", "check_quality", ...],
+    review_history=[],
+    task_id="py_sql_injection",
+)
 ```
 
-Tools have three analysis modes:
-- **fixture_backed**: A real workspace with the actual files from the task's fixture directory
-- **diff_reconstructed**: A temporary file created from added lines in the diff
-- **heuristic_only**: Pattern matching on the diff text alone (always available, no external deps)
+The policy emits a `PRReviewAction`:
 
-### `app.py` — FastAPI Entrypoint
-
-```python
-from envs.pr_review_env.compat import create_fastapi_app
-from .pr_review_env import PRReviewEnv
-
-app = create_fastapi_app(PRReviewEnv, PRReviewAction, PRReviewObservation)
+```json
+{"tool_name": "check_security", "arguments": {}}
 ```
 
-This creates `/reset`, `/step`, `/state`, and `/health` endpoints. That's the complete API surface the training loop needs.
+Before tool execution, the environment fills in state-aware arguments. For
+analysis tools it adds the diff and task id. If loader context is enabled, it
+also passes the current `review_config`.
 
-## The Client Side
+The tool returns a structured result:
 
-```python
-class PRReviewEnvClient(EnvClient[PRReviewAction, PRReviewObservation, PRReviewState]):
-    async def reset(self) -> StepResult[PRReviewObservation]: ...
-    async def step(self, action: PRReviewAction) -> StepResult[PRReviewObservation]: ...
-    async def state(self) -> PRReviewState: ...
+```json
+{
+  "tool": "check_security",
+  "score": 0.64,
+  "findings": ["Potential SQL injection via string-built query"],
+  "backend": "heuristic",
+  "analysis_mode": "fixture_backed"
+}
 ```
 
-The typed client wraps the HTTP calls and deserializes responses into Pydantic models. Training loops use it like this:
+The grader assigns a step reward, updates review history, and returns the next
+observation. When the policy submits a verdict, the terminal reward compares the
+verdict to the expected task label and checks whether the evidence supports it.
 
-```python
-async with PRReviewEnvClient(base_url="http://localhost:8000") as env:
-    obs = await env.reset()
-    result = await env.step(PRReviewAction(
-        tool_name="check_security",
-        arguments={"diff_str": obs.observation.diff_str}
-    ))
-    print(result.reward, result.observation.done)
+## The Loader Boundary
+
+The context loader is deliberately not a runtime LLM dependency. It is a
+deterministic structural parser over files in `docs/`. It can extract:
+
+- architecture summary
+- critical paths
+- tool weights
+- domain priorities
+- author-depth overrides
+- enabled/planned external tools
+
+Training normally uses:
+
+```bash
+--task-loader-mode short
 ```
 
-## The Compatibility Layer
+That gives each task a compact config: enough for the model to learn that
+critical paths and organizational context matter, but short enough to keep GRPO
+prompt cost manageable.
 
-Since OpenEnv's upstream package pins are currently in flux, we ship a `compat.py` that provides drop-in fallbacks for all OpenEnv types. When the real package is available, it uses it. When it isn't, the fallback implementations keep everything importable and testable:
+Other modes exist for controlled experiments:
 
-```python
-try:
-    from openenv.core.env_server import MCPEnvironment, Observation, State
-    OPENENV_AVAILABLE = True
-except Exception:
-    OPENENV_AVAILABLE = False
-    class MCPEnvironment: ...  # full fallback implementation
-```
+- `empty`: exercise the loader path with almost no prompt text
+- `full`: pass the full structural config
+- `off`: disable loader config
 
-This design means the environment imports and runs correctly in any Python environment — no Docker, no OpenEnv package — just pure Python.
+## Why the Architecture Is Small
 
----
+The system avoids a large orchestration stack. There is no separate queue,
+database, vector store, or agent framework. The benchmark only needs to answer:
 
-*Next: [Building a Multi-Language PR Benchmark](./03-task-bank.md)*
+1. what task is being reviewed?
+2. what tools did the policy call?
+3. what evidence came back?
+4. what reward should that action receive?
+5. what final verdict was submitted?
+
+Keeping that loop small makes the training path auditable. It also means the
+same task loader and reward code are used by baselines, GRPO, trained-model
+evaluation, the UI smoke path, HF Jobs, and HPC.
+
+## Server and Client
+
+`envs/pr_review_env/server/app.py` exposes the environment through the
+OpenEnv-compatible FastAPI wrapper. The client in
+`envs/pr_review_env/client/pr_review_env_client.py` parses reset/step responses
+back into typed observations.
+
+Training currently computes rewards locally by replaying task state inside
+`PRReviewEnv`, so the GRPO loop does not need to run a remote server. The server
+still matters for demos, integration tests, and compatibility with OpenEnv
+workflows.

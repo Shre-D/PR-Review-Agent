@@ -60,3 +60,13 @@
 - actionlint
 - yamllint
 - mypy
+
+## Custom Rules
+| Domain | Pattern | Severity | Message |
+|--------|---------|----------|---------|
+| security | src/auth/.*jwt\.decode\(.*verify_signature.*False | critical | Auth middleware must not disable JWT signature verification. |
+| security | logger\..*password | critical | Auth and password flows must not log credentials, tokens, or sensitive PII. |
+| quality | db/migrations/.*RunPython\( | warning | Data migrations must include a rollback or reverse_code plan. |
+| config | infrastructure/.*resources: | warning | Infrastructure changes must preserve resource limits and health probes unless explicitly justified. |
+| config | \.github/workflows/.*permissions:.*write | warning | GitHub Actions write permissions require least-privilege justification. |
+| config | Dockerfile | warning | Dockerfile changes require pinned base images and an explicit non-root user. |

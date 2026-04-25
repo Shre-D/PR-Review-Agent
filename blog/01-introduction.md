@@ -1,56 +1,104 @@
----
-title: "Teaching Machines to Review Code: Why Reinforcement Learning?"
-date: 2026-04-24
-tags: [reinforcement-learning, code-review, openenv, grpo]
----
+# Introduction: Code Review as Tool Routing
 
-# Teaching Machines to Review Code: Why Reinforcement Learning?
+Most automated code review systems try to answer the whole review in one shot:
+read the diff, write comments, maybe suggest a verdict. This project takes a
+different position: review quality depends less on fluent prose and more on
+choosing the right evidence.
 
-Every engineering team has the same problem. Pull requests pile up. Senior engineers spend a third of their week reviewing code instead of writing it. Junior engineers wait days for feedback. Security vulnerabilities slip through because the person who spotted SQL injection last week is heads-down on a deadline this week.
+The PR Review Router is an OpenEnv-compatible benchmark where a small policy
+model learns to route a pull request through review tools before it submits a
+final verdict.
 
-The obvious answer is automation. But the obvious automation — static analysis tools — only partially works.
+The model does not need to be a general-purpose senior engineer. It needs to
+learn questions like:
 
-## Why Static Analysis Isn't Enough
+- Is this a security-sensitive change?
+- Is the risky file a Dockerfile, workflow, or `.gitignore` rather than source
+  code?
+- Is this a clean refactor that should avoid unnecessary tool calls?
+- Has enough evidence been gathered to approve, request changes, reject, or
+  escalate?
 
-Tools like Semgrep, Pylint, and Bandit are excellent at what they do. They catch known patterns reliably and cheaply. But they share a fundamental limitation: they don't reason about a *pull request*. They analyze files. They don't know whether the change introduces a new vulnerability, whether it removes a test, or whether the Dockerfile that just got added will run as root in production.
+The trained policy target is `Qwen/Qwen3-1.7B`, fine-tuned with GRPO and LoRA.
+The router is intentionally small. Larger models may be used by developers
+while building the project, but they are not part of training, reward
+calculation, routing, or evaluation.
 
-A pull request is a *decision problem*. Given a diff, a description, and the context of what changed, should this be approved, sent back for changes, or rejected outright? That's not a pattern-matching problem. That's a reasoning problem.
+## What the Environment Does
 
-## Why Not Just Use GPT-4?
+Each episode starts with a benchmark PR task. The observation contains:
 
-Large language models can reason. Ask GPT-4 or Claude to review a PR and you'll get surprisingly thoughtful feedback. But there are three problems:
+- the PR description
+- the diff
+- primary language
+- changed file types
+- task metadata such as author level and expected risk domains
+- prior review history
+- tool results gathered so far
 
-1. **Cost.** A 10,000-token diff through a frontier model costs real money per PR. At 500 PRs/day, that's a non-trivial budget line.
-2. **No evidence trail.** When the model says "this looks fine," you have no idea if it actually ran a security check or just guessed. There's no auditability.
-3. **Inconsistency.** The same diff reviewed twice by the same model can produce different verdicts. That's not acceptable for a compliance gate.
+The policy emits one JSON tool call at a time:
 
-## The RL Framing
+```json
+{"tool_name": "check_security", "arguments": {}}
+```
 
-Here's the key insight: code review is a **tool-use problem**. A good reviewer doesn't just stare at the diff. They run the linter. They check whether the tests pass. They look at the Dockerfile. They aggregate evidence and *then* emit a verdict.
+The environment executes that action, returns a reward, and updates the review
+state. The episode ends when the policy calls `submit_review` or `escalate`.
 
-That's exactly what our agent does. At each step, it chooses one of five analysis tools to call:
+Terminal example:
 
-- `check_security` — SQL injection, eval(), secrets, pickle, runtime exec
-- `check_quality` — null safety, error handling, complexity, TODOs
-- `check_build_and_types` — compilation, type errors, dependency changes
-- `check_tests` — test coverage signals, missing test files
-- `check_config` — Dockerfile, YAML, GitHub Actions, .gitignore
+```json
+{
+  "tool_name": "submit_review",
+  "arguments": {
+    "verdict": "reject",
+    "confidence": 0.9,
+    "reasoning": "Security evidence shows string-built SQL from user input."
+  }
+}
+```
 
-After gathering enough evidence, it calls `submit_review` with a verdict: approve, request_changes, or reject. It can also `escalate` to a human when the case is genuinely ambiguous.
+## Current Scope
 
-Reinforcement learning is the right tool here because the reward signal is natural: **did the agent reach the right verdict, and did it do so efficiently?** We reward correct verdicts with supporting evidence, penalize redundant tool calls, and give extra credit for catching the right issues without over-calling.
+The default benchmark is `--task-bank all`, which combines:
 
-## The Scale We're Targeting
+- `65` seed tasks from `tasks/tasks.jsonl`
+- `13` comprehensive multi-file tasks from `tasks/comprehensive_tasks.jsonl`
 
-Our benchmark covers:
-- **7 language families**: Python, TypeScript, JavaScript, Java, Go, Rust, and repo-global files
-- **65+ benchmark tasks** spanning security vulnerabilities, quality regressions, config issues, and clean diffs
-- **3 task families**: pure code PRs, pure config PRs, and mixed PRs
+Together they form `tasks/all_tasks.jsonl` with `78` tasks.
 
-The policy model — Qwen/Qwen3-1.7B — is small enough to run on a single GPU and fast enough for real-time CI integration.
+The benchmark covers Python, TypeScript, JavaScript, Java, Go, Rust, Dockerfile,
+YAML, GitHub Actions, `.gitignore`, and build manifests. It includes pure code
+PRs, config-only PRs, and mixed PRs that span code plus repository-global files.
 
-The rest of this blog series explains how we built it.
+## Why Reinforcement Learning Here
 
----
+A supervised model can imitate a reviewer, but this project cares about the
+sequence of review decisions. Calling every tool is slow and noisy. Calling no
+tools can produce unsupported verdicts. The useful behavior is in the middle:
+gather enough relevant evidence, avoid redundant checks, then submit the right
+verdict.
 
-*Next: [Inside the OpenEnv PR Review Environment](./02-architecture.md)*
+That is why the training target is a routing policy rather than a text
+generator. GRPO gives the model feedback on the whole action choice, not just
+whether the final sentence looks plausible.
+
+## Submission State
+
+The repository is now organized around:
+
+- one default task interface: `--task-bank all`
+- one loader interface: `--task-loader-mode short`
+- two training targets: Hugging Face Jobs and HPC
+- deterministic baseline evaluation before trained-model results are claimed
+
+Current baselines on all 78 tasks:
+
+| Policy | Episodes | Accuracy | Mean Return |
+|---|---:|---:|---:|
+| Random | 78 | 0.449 | 0.821 |
+| Heuristic | 78 | 0.590 | 2.505 |
+| Trained SLM | pending | pending | pending |
+
+The final phase is training the LoRA adapter and evaluating it against the same
+78-task benchmark.

@@ -32,8 +32,8 @@ def test_select_tier_large_for_junior_on_critical_path():
 def test_route_requirements_are_slm_only_process_constraints():
     requirements = route_requirements(ModelTier.LARGE)
 
-    assert requirements["min_tools"] == 3
-    assert requirements["max_steps"] == 7
+    assert requirements["min_tools"] == 4
+    assert requirements["max_steps"] == 9
     assert requirements["requires_security"] is True
 
 
