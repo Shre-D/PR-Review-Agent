@@ -1,0 +1,10 @@
+openenv-core
+fastmcp
+fastapi
+uvicorn
+httpx
+pyyaml
+semgrep
+pylint
+radon
+pydantic

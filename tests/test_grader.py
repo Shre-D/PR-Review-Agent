@@ -1,0 +1,101 @@
+from envs.pr_review_env.server.grader import (
+    aggregate_tool_scores,
+    relevant_tools,
+    step_reward,
+    terminal_reward,
+)
+from envs.pr_review_env.models import ReviewConfig
+from envs.pr_review_env.server.tasks import PRTask
+
+
+def _task(**overrides):
+    payload = {
+        "task_id": "sample",
+        "diff_str": "diff --git a/app.py b/app.py\n+print('hi')\n",
+        "pr_description": "sample",
+        "primary_language": "python",
+        "changed_file_types": ["python"],
+        "repo_kind": "backend_service",
+        "expected_verdict": "reject",
+        "risk_domains": ["security"],
+        "difficulty": "easy",
+        "review_goal": "sample",
+    }
+    payload.update(overrides)
+    return PRTask(**payload)
+
+
+def test_relevant_tools_include_security_for_security_tasks():
+    task = _task()
+    assert "check_security" in relevant_tools(task)
+
+
+def test_aggregate_tool_scores_renormalizes_present_tools():
+    score = aggregate_tool_scores(
+        {
+            "check_security": {"score": 0.2},
+            "check_quality": {"score": 0.8},
+        }
+    )
+    assert 0.0 <= score <= 1.0
+
+
+def test_step_reward_penalizes_duplicate_calls():
+    task = _task()
+    assert step_reward(task, "check_security", already_called=True, step_count=2) == -0.2
+
+
+def test_terminal_reward_prefers_correct_verdict_with_evidence():
+    task = _task()
+    reward = terminal_reward(
+        task,
+        "reject",
+        {"check_security": {"score": 0.1}},
+    )
+    assert reward > 1.0
+
+
+def test_config_tool_weights_change_aggregate_score():
+    score = aggregate_tool_scores(
+        {
+            "check_security": {"score": 0.0},
+            "check_quality": {"score": 1.0},
+        },
+        ReviewConfig(tool_weights={"check_security": 0.9, "check_quality": 0.1}),
+    )
+
+    assert score < 0.5
+
+
+def test_config_domain_priority_adjusts_step_reward():
+    task = _task()
+    default_reward = step_reward(task, "check_security", already_called=False, step_count=1)
+    configured_reward = step_reward(
+        task,
+        "check_security",
+        already_called=False,
+        step_count=1,
+        config=ReviewConfig(domain_priorities={"security": 2.0}),
+    )
+
+    assert configured_reward > default_reward
+
+
+def test_config_confidence_scales_terminal_reward():
+    task = _task()
+    low = terminal_reward(
+        task,
+        "reject",
+        {"check_security": {"score": 0.1}},
+        config=ReviewConfig(),
+        confidence=0.0,
+    )
+    high = terminal_reward(
+        task,
+        "reject",
+        {"check_security": {"score": 0.1}},
+        config=ReviewConfig(),
+        confidence=1.0,
+    )
+
+    assert high > low

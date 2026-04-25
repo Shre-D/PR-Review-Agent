@@ -1,7 +1,7 @@
 [project]
 name = "pr-review-env"
 version = "0.1.0"
-description = "RL environment for PR triage via static analysis tool routing"
+description = "Multi-language OpenEnv benchmark for PR review tool routing"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{name = "Your Team"}]
@@ -11,15 +11,29 @@ dependencies = [
     "openenv-core",
     "fastmcp",
     "pydantic",
+    "httpx",
 ]
 
 [project.optional-dependencies]
 server = [
+    "pyyaml",
     "semgrep",
     "radon",
     "pylint",
     "fastapi",
     "uvicorn",
+]
+ui = [
+    "gradio>=4.0",
+]
+train = [
+    "trl",
+    "peft",
+    "bitsandbytes",
+    "accelerate",
+    "transformers",
+    "datasets",
+    "torch",
 ]
 dev = [
     "pytest",
@@ -28,7 +42,12 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["envs.pr_review_env"]
+packages = [
+    "envs",
+    "envs.pr_review_env",
+    "envs.pr_review_env.client",
+    "envs.pr_review_env.server",
+]
 
 [build-system]
 requires = ["setuptools>=61.0"]

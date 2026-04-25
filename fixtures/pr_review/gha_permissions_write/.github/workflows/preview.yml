@@ -1,0 +1,11 @@
+name: preview
+on: [pull_request]
+jobs:
+  deploy:
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./deploy-preview.sh

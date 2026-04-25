@@ -1,0 +1,8 @@
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: LOG_LEVEL
+              value: debug
