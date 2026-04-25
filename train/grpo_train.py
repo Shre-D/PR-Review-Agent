@@ -24,7 +24,9 @@ import csv
 import json
 import os
 import sys
+from collections import defaultdict
 from pathlib import Path
+from threading import Lock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -44,13 +46,21 @@ try:
     import torch
     from datasets import Dataset
     from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
-    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from transformers import (
+        AutoModelForCausalLM,
+        AutoTokenizer,
+        BitsAndBytesConfig,
+        TrainerCallback,
+    )
     from trl import GRPOConfig, GRPOTrainer
     _ML_AVAILABLE = True
     _ML_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:
     _ML_AVAILABLE = False
     _ML_IMPORT_ERROR = exc
+
+    class TrainerCallback:  # type: ignore[no-redef]
+        """Fallback when transformers isn't installed (smoke-import only)."""
 
 # ---------------------------------------------------------------------------
 # Prompt building
@@ -182,14 +192,30 @@ def training_prompt(obs: PRReviewObservation, review_config: dict | None = None)
     )
 
 
+def _read_holdout_ids(path: str | None) -> set[str]:
+    if not path:
+        return set()
+    holdout_path = Path(path)
+    if not holdout_path.exists():
+        return set()
+    return {
+        line.strip()
+        for line in holdout_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+
+
 def build_training_state_rows(
     cfg: TrainingConfig,
     review_config: dict | None = None,
+    holdout_ids: set[str] | None = None,
 ) -> list[dict]:
     """Build trainable env states. Rewards are computed online, not precomputed."""
     tasks = load_tasks(cfg.tasks_file)
     if cfg.training_task_ids:
         tasks = [task for task in tasks if task.task_id in set(cfg.training_task_ids)]
+    if holdout_ids:
+        tasks = [task for task in tasks if task.task_id not in holdout_ids]
     if cfg.training_task_limit and len(tasks) > cfg.training_task_limit:
         tasks = tasks[: cfg.training_task_limit]
 
@@ -231,39 +257,191 @@ def build_training_state_rows(
     return rows
 
 
+_ALL_TOOLS = (
+    "check_security",
+    "check_quality",
+    "check_build_and_types",
+    "check_tests",
+    "check_config",
+    "submit_review",
+    "escalate",
+    "invalid",
+)
+
+
+class TrainingMetricsCounter:
+    """Thread-safe per-batch aggregator for env-side metrics.
+
+    `score_completion_locally` writes one record per completion. The
+    `RewardLogCallback` reads + clears it on every `on_log`, producing one
+    CSV/W&B row per logged step.
+    """
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._reset()
+
+    def _reset(self) -> None:
+        self.tool_counts: dict[str, int] = defaultdict(int)
+        self.raw_rewards: list[float] = []
+        self.normalized_rewards: list[float] = []
+        self.terminal_count: int = 0
+        self.terminal_correct: int = 0
+        self.parse_failures: int = 0
+        self.env_errors: int = 0
+
+    def record(
+        self,
+        tool_name: str,
+        normalized_reward: float,
+        raw_reward: float | None = None,
+        terminal: bool = False,
+        correct: bool | None = None,
+        parse_failed: bool = False,
+        env_error: bool = False,
+    ) -> None:
+        with self._lock:
+            self.tool_counts[tool_name] += 1
+            self.normalized_rewards.append(normalized_reward)
+            if raw_reward is not None:
+                self.raw_rewards.append(raw_reward)
+            if terminal:
+                self.terminal_count += 1
+                if correct:
+                    self.terminal_correct += 1
+            if parse_failed:
+                self.parse_failures += 1
+            if env_error:
+                self.env_errors += 1
+
+    def flush(self) -> dict[str, float]:
+        with self._lock:
+            total = sum(self.tool_counts.values()) or 1
+            snapshot: dict[str, float] = {
+                "n_completions": float(total),
+                "raw_reward_mean": (
+                    sum(self.raw_rewards) / len(self.raw_rewards)
+                    if self.raw_rewards
+                    else 0.0
+                ),
+                "normalized_reward_mean": (
+                    sum(self.normalized_rewards) / len(self.normalized_rewards)
+                    if self.normalized_rewards
+                    else 0.0
+                ),
+                "parse_failure_rate": self.parse_failures / total,
+                "env_error_rate": self.env_errors / total,
+                "terminal_rate": self.terminal_count / total,
+                "terminal_accuracy": (
+                    self.terminal_correct / self.terminal_count
+                    if self.terminal_count
+                    else 0.0
+                ),
+            }
+            for tool in _ALL_TOOLS:
+                snapshot[f"tool_frac/{tool}"] = self.tool_counts.get(tool, 0) / total
+                snapshot[f"tool_count/{tool}"] = float(self.tool_counts.get(tool, 0))
+            self._reset()
+            return snapshot
+
+
 def score_completion_locally(
     completion,
     task_id: str,
     replay_actions: list[dict] | None = None,
     review_config: dict | None = None,
     task_path: str | None = None,
+    counter: TrainingMetricsCounter | None = None,
 ) -> float:
     text = _completion_to_text(completion)
-    if extract_action_payload(text) is None:
-        return reward_floor()
+    payload = extract_action_payload(text)
+    if payload is None:
+        floor = reward_floor()
+        if counter is not None:
+            counter.record(
+                tool_name="invalid",
+                normalized_reward=floor,
+                raw_reward=-2.83,
+                parse_failed=True,
+            )
+        return floor
 
     env = PRReviewEnv(seed=7, task_path=task_path, review_config=review_config)
     obs = env.reset(task_id=task_id)
+    expected_verdict = obs.metadata.get("expected_verdict") if isinstance(obs.metadata, dict) else None
     try:
-        for payload in replay_actions or []:
-            replay_action = PRReviewAction.model_validate(payload)
+        for replay_payload in replay_actions or []:
+            replay_action = PRReviewAction.model_validate(replay_payload)
             obs = env.step(_action_with_state_args(replay_action, obs))
             if obs.done:
-                return reward_floor()
+                floor = reward_floor()
+                if counter is not None:
+                    counter.record(
+                        tool_name=str(payload.get("tool_name", "invalid")),
+                        normalized_reward=floor,
+                        raw_reward=-2.83,
+                        env_error=True,
+                    )
+                return floor
 
-        action = _action_with_state_args(parse_action(text), obs)
+        parsed = parse_action(text)
+        action = _action_with_state_args(parsed, obs)
         obs = env.step(action)
     except Exception:
-        return reward_floor()
+        floor = reward_floor()
+        if counter is not None:
+            counter.record(
+                tool_name=str(payload.get("tool_name", "invalid")),
+                normalized_reward=floor,
+                raw_reward=-2.83,
+                env_error=True,
+            )
+        return floor
 
-    reward = float(obs.reward or 0.0)
+    normalized = float(obs.reward or 0.0)
     if obs.last_tool_result.get("error"):
-        return reward_near_floor()
-    return round(reward, 3)
+        normalized = reward_near_floor()
+        if counter is not None:
+            counter.record(
+                tool_name=action.tool_name,
+                normalized_reward=normalized,
+                raw_reward=-2.55,
+                env_error=True,
+            )
+        return round(normalized, 3)
+
+    if counter is not None:
+        terminal = action.tool_name in {"submit_review", "escalate"}
+        correct: bool | None = None
+        if terminal and expected_verdict is not None:
+            submitted = obs.last_tool_result.get("verdict", action.tool_name)
+            correct = str(submitted).strip().lower() == str(expected_verdict).strip().lower()
+        # Approximate raw reward by inverting the normalize_reward map.
+        # normalize_reward: norm = 0.01 + (raw - RAW_MIN) / (RAW_MAX - RAW_MIN) * 0.98
+        # Solve for raw:
+        raw_min, raw_max = -2.83, 1.51
+        raw = (normalized - 0.01) / 0.98 * (raw_max - raw_min) + raw_min
+        counter.record(
+            tool_name=action.tool_name,
+            normalized_reward=normalized,
+            raw_reward=raw,
+            terminal=terminal,
+            correct=correct,
+        )
+    return round(normalized, 3)
 
 
-def make_env_reward_func(review_config: dict | None = None, task_path: str | None = None):
-    """Create a TRL reward function that scores completions in PRReviewEnv."""
+def make_env_reward_func(
+    review_config: dict | None = None,
+    task_path: str | None = None,
+    counter: TrainingMetricsCounter | None = None,
+):
+    """Create a TRL reward function that scores completions in PRReviewEnv.
+
+    If `counter` is provided, every completion is recorded with its tool
+    choice, normalized reward, approximate raw reward, and terminal-correctness
+    flag. The `RewardLogCallback` flushes the counter at every logged step.
+    """
 
     def reward_func(completions, task_id=None, replay_actions=None, **kwargs):
         task_ids = task_id or kwargs.get("task_id")
@@ -277,7 +455,9 @@ def make_env_reward_func(review_config: dict | None = None, task_path: str | Non
             review_configs = [review_configs] * len(completions)
         rewards = []
         for completion, tid, replay, cfg_payload in zip(completions, task_ids, replays, review_configs):
-            rewards.append(score_completion_locally(completion, tid, replay, cfg_payload, task_path))
+            rewards.append(
+                score_completion_locally(completion, tid, replay, cfg_payload, task_path, counter=counter)
+            )
         return rewards
 
     return reward_func
@@ -291,32 +471,85 @@ def build_dataset(rows: list[dict]) -> "Dataset":
 # Training log callback
 # ---------------------------------------------------------------------------
 
-class RewardLogCallback:
-    """Transformers TrainerCallback that appends one CSV row per logged step.
+_BASE_COLUMNS = ["step", "loss", "reward_mean", "reward_std", "kl"]
+_ENV_COLUMNS = [
+    "raw_reward_mean",
+    "normalized_reward_mean",
+    "terminal_rate",
+    "terminal_accuracy",
+    "parse_failure_rate",
+    "env_error_rate",
+    "n_completions",
+]
+_TOOL_FRAC_COLUMNS = [f"tool_frac/{tool}" for tool in _ALL_TOOLS]
+_TOOL_COUNT_COLUMNS = [f"tool_count/{tool}" for tool in _ALL_TOOLS]
+LOG_COLUMNS = _BASE_COLUMNS + _ENV_COLUMNS + _TOOL_FRAC_COLUMNS + _TOOL_COUNT_COLUMNS
 
-    Columns: step, loss, reward_mean, reward_std, kl
+
+class RewardLogCallback(TrainerCallback):
+    """TrainerCallback that appends one CSV row per logged step and mirrors
+    custom env-side metrics to W&B when reporting is enabled.
+
+    CSV columns:
+        step, loss, reward_mean, reward_std, kl,
+        raw_reward_mean, normalized_reward_mean,
+        terminal_rate, terminal_accuracy,
+        parse_failure_rate, env_error_rate, n_completions,
+        tool_frac/<tool>...   (fraction of completions that picked this tool)
+        tool_count/<tool>...  (absolute count this logging window)
+
     Written to <output_dir>/training_log.csv — readable by generate_report.py.
     """
 
-    def __init__(self, log_path: Path) -> None:
+    def __init__(
+        self,
+        log_path: Path,
+        counter: TrainingMetricsCounter | None = None,
+        report_to: str = "none",
+    ) -> None:
+        super().__init__()
         self.log_path = log_path
+        self.counter = counter
+        self.report_to = report_to
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("w", newline="") as f:
-            csv.writer(f).writerow(["step", "loss", "reward_mean", "reward_std", "kl"])
+            csv.writer(f).writerow(LOG_COLUMNS)
 
     def on_log(self, args, state, control, logs=None, **kwargs):  # noqa: ANN001
         if not logs:
             return
         step = state.global_step
-        row = [
-            step,
-            logs.get("loss", logs.get("train_loss", "")),
-            logs.get("reward_mean", logs.get("rewards/mean", logs.get("reward", ""))),
-            logs.get("reward_std", logs.get("rewards/std", "")),
-            logs.get("kl", logs.get("kl_divergence", "")),
-        ]
+        env_metrics = self.counter.flush() if self.counter is not None else {}
+
+        row_dict: dict[str, object] = {
+            "step": step,
+            "loss": logs.get("loss", logs.get("train_loss", "")),
+            "reward_mean": logs.get("reward_mean", logs.get("rewards/mean", logs.get("reward", ""))),
+            "reward_std": logs.get("reward_std", logs.get("rewards/std", "")),
+            "kl": logs.get("kl", logs.get("kl_divergence", "")),
+        }
+        for col in _ENV_COLUMNS + _TOOL_FRAC_COLUMNS + _TOOL_COUNT_COLUMNS:
+            row_dict[col] = env_metrics.get(col, "")
+
         with self.log_path.open("a", newline="") as f:
-            csv.writer(f).writerow(row)
+            csv.writer(f).writerow([row_dict.get(col, "") for col in LOG_COLUMNS])
+
+        if self.report_to == "wandb" and env_metrics:
+            try:
+                import wandb
+
+                if wandb.run is not None:
+                    wandb_payload = {
+                        f"env/{key.split('/')[-1]}" if "/" not in key else f"env/{key}": value
+                        for key, value in env_metrics.items()
+                        if not key.startswith("tool_")
+                    }
+                    for tool in _ALL_TOOLS:
+                        wandb_payload[f"env/tool_frac/{tool}"] = env_metrics.get(f"tool_frac/{tool}", 0.0)
+                        wandb_payload[f"env/tool_count/{tool}"] = env_metrics.get(f"tool_count/{tool}", 0.0)
+                    wandb.log(wandb_payload, step=step)
+            except ImportError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +622,11 @@ def main() -> None:
     )
     parser.add_argument("--lora-r", type=int, default=None)
     parser.add_argument("--review-config", default="", help="Optional review_config.json generated from docs.")
+    parser.add_argument(
+        "--holdout-file",
+        default=str(ROOT / "tasks" / "holdout_ids.txt"),
+        help="File listing task_ids excluded from training. Defaults to tasks/holdout_ids.txt; pass empty string to disable.",
+    )
     parser.add_argument("--report-to", default="none", choices=["none", "wandb", "tensorboard"])
     parser.add_argument("--wandb", action="store_true", help="Shorthand for --report-to wandb")
     parser.add_argument(
@@ -448,8 +686,12 @@ def main() -> None:
     # Load model
     model, tokenizer = load_model_qlora(cfg)
 
+    holdout_ids = _read_holdout_ids(args.holdout_file)
+    if holdout_ids:
+        print(f"Holdout: excluding {len(holdout_ids)} task_ids from training (file={args.holdout_file})")
+
     print("\nBuilding online-reward training states...")
-    rows = build_training_state_rows(cfg, review_config)
+    rows = build_training_state_rows(cfg, review_config, holdout_ids=holdout_ids)
     dataset = build_dataset(rows)
     print(f"  Built {len(rows)} train states from {cfg.training_task_limit} tasks")
 
@@ -479,11 +721,12 @@ def main() -> None:
     )
 
     log_csv = Path(cfg.output_dir) / "training_log.csv"
-    reward_cb = RewardLogCallback(log_csv)
+    metrics_counter = TrainingMetricsCounter()
+    reward_cb = RewardLogCallback(log_csv, counter=metrics_counter, report_to=cfg.report_to)
 
     trainer = GRPOTrainer(
         model=model,
-        reward_funcs=[make_env_reward_func(review_config, cfg.tasks_file)],
+        reward_funcs=[make_env_reward_func(review_config, cfg.tasks_file, counter=metrics_counter)],
         args=grpo_cfg,
         train_dataset=dataset,
         processing_class=tokenizer,

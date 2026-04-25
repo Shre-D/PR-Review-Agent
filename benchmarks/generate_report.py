@@ -76,15 +76,17 @@ def generate_report(
     trained  = _load_json(trained_path)
     log_rows = _load_csv(log_path)
 
-    # ---- Figure layout: 2×2 grid ----------------------------------------
-    fig = plt.figure(figsize=(14, 10))
-    fig.suptitle("PR Review Agent — Training Report", fontsize=15, fontweight="bold", y=0.98)
-    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.45, wspace=0.35)
+    # ---- Figure layout: 3×2 grid ----------------------------------------
+    fig = plt.figure(figsize=(15, 14))
+    fig.suptitle("PR Review Agent — Training Report", fontsize=15, fontweight="bold", y=0.99)
+    gs = gridspec.GridSpec(3, 2, figure=fig, hspace=0.5, wspace=0.35)
 
-    ax_acc   = fig.add_subplot(gs[0, 0])  # top-left:  accuracy comparison
-    ax_ret   = fig.add_subplot(gs[0, 1])  # top-right: mean return comparison
-    ax_lang  = fig.add_subplot(gs[1, 0])  # bot-left:  per-language accuracy
-    ax_curve = fig.add_subplot(gs[1, 1])  # bot-right: training reward curve
+    ax_acc   = fig.add_subplot(gs[0, 0])  # accuracy comparison
+    ax_ret   = fig.add_subplot(gs[0, 1])  # mean return comparison
+    ax_lang  = fig.add_subplot(gs[1, 0])  # per-language accuracy
+    ax_curve = fig.add_subplot(gs[1, 1])  # training reward curve
+    ax_tools = fig.add_subplot(gs[2, 0])  # per-tool mix over training
+    ax_qual  = fig.add_subplot(gs[2, 1])  # terminal accuracy / parse failures
 
     COLORS = {"random": "#9e9e9e", "heuristic": "#5c9bd6", "trained_slm": "#2ca02c"}
     LABELS = {"random": "Random", "heuristic": "Heuristic", "trained_slm": "Trained SLM"}
@@ -212,6 +214,76 @@ def generate_report(
         )
         ax_curve.set_title("Training Curves (GRPO)", fontweight="bold")
         ax_curve.spines[["top", "right"]].set_visible(False)
+
+    # ---- Panel 5: Per-tool mix over training (stacked area) ------------
+    TOOLS = [
+        "check_security", "check_quality", "check_build_and_types",
+        "check_tests", "check_config", "submit_review", "escalate", "invalid",
+    ]
+    TOOL_COLORS = {
+        "check_security":        "#d62728",
+        "check_quality":         "#1f77b4",
+        "check_build_and_types": "#9467bd",
+        "check_tests":           "#2ca02c",
+        "check_config":          "#ff7f0e",
+        "submit_review":         "#17becf",
+        "escalate":              "#7f7f7f",
+        "invalid":               "#000000",
+    }
+    if log_rows and any(f"tool_frac/{TOOLS[0]}" in row for row in log_rows):
+        steps = [int(r["step"]) for r in log_rows if r.get("step")]
+        tool_series = {tool: [_float(r.get(f"tool_frac/{tool}", "")) or 0.0 for r in log_rows] for tool in TOOLS}
+        ax_tools.stackplot(
+            steps,
+            *[tool_series[tool] for tool in TOOLS],
+            labels=TOOLS,
+            colors=[TOOL_COLORS[tool] for tool in TOOLS],
+            alpha=0.85,
+        )
+        ax_tools.set_title("Tool Mix Over Training", fontweight="bold")
+        ax_tools.set_xlabel("Step")
+        ax_tools.set_ylabel("Fraction of completions")
+        ax_tools.set_ylim(0, 1)
+        ax_tools.legend(loc="upper right", fontsize=7, ncol=2)
+        ax_tools.spines[["top", "right"]].set_visible(False)
+    else:
+        ax_tools.text(
+            0.5, 0.5,
+            "no per-tool columns in log\n(run training with the new RewardLogCallback)",
+            ha="center", va="center", transform=ax_tools.transAxes,
+            fontsize=10, color="gray",
+        )
+        ax_tools.set_title("Tool Mix Over Training", fontweight="bold")
+        ax_tools.spines[["top", "right"]].set_visible(False)
+
+    # ---- Panel 6: Terminal accuracy + parse failure rate over time ------
+    if log_rows and any("terminal_accuracy" in row for row in log_rows):
+        steps = [int(r["step"]) for r in log_rows if r.get("step")]
+        acc = [_float(r.get("terminal_accuracy", "")) for r in log_rows]
+        pf = [_float(r.get("parse_failure_rate", "")) for r in log_rows]
+        acc_pairs = [(s, v) for s, v in zip(steps, acc) if v is not None]
+        pf_pairs = [(s, v) for s, v in zip(steps, pf) if v is not None]
+        if acc_pairs:
+            xs, ys = zip(*acc_pairs)
+            ax_qual.plot(xs, ys, color="#2ca02c", linewidth=1.5, label="terminal accuracy")
+        if pf_pairs:
+            xs, ys = zip(*pf_pairs)
+            ax_qual.plot(xs, ys, color="#d62728", linewidth=1.2, linestyle="--", alpha=0.8, label="parse failure rate")
+        ax_qual.set_title("Terminal Accuracy & Parse Failures", fontweight="bold")
+        ax_qual.set_xlabel("Step")
+        ax_qual.set_ylabel("Rate")
+        ax_qual.set_ylim(0, 1.05)
+        ax_qual.legend(loc="upper left", fontsize=8)
+        ax_qual.spines[["top", "right"]].set_visible(False)
+    else:
+        ax_qual.text(
+            0.5, 0.5,
+            "no terminal_accuracy / parse_failure_rate in log",
+            ha="center", va="center", transform=ax_qual.transAxes,
+            fontsize=10, color="gray",
+        )
+        ax_qual.set_title("Terminal Accuracy & Parse Failures", fontweight="bold")
+        ax_qual.spines[["top", "right"]].set_visible(False)
 
     # ---- Summary text at bottom -----------------------------------------
     lines = []

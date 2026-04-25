@@ -1,0 +1,16 @@
+# Held-out task IDs — never seen during training.
+# Selected to cover diverse risk domains and the harder comprehensive tasks.
+# 13 tasks (~17% of the 78-task bank).
+comp_auth_jwt_removed
+comp_payments_raw_sql
+comp_go_goroutine_leak
+comp_ts_any_types_api
+comp_infra_secrets_exposed
+comp_rust_unwrap_io_multi
+comp_django_irreversible_migration
+comp_java_null_exception
+comp_go_nil_middleware
+comp_py_logging_pii
+comp_k8s_resource_limits_removed
+comp_py_rate_limit_removed
+comp_clean_analytics_refactor
