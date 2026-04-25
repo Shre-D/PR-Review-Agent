@@ -1,5 +1,6 @@
 from train.grpo_train import (
     _action_with_state_args,
+    _clean_review_config_payload,
     build_training_state_rows,
     make_env_reward_func,
     score_completion_locally,
@@ -93,3 +94,19 @@ def test_cpu_training_config_uses_valid_grpo_generation_count():
     cfg = TrainingConfig.for_cpu()
 
     assert cfg.num_generations >= 2
+
+
+def test_clean_review_config_payload_removes_dataset_nulls():
+    payload = {
+        "domain_priorities": {"security": 1.6, "quality": None},
+        "tool_weights": {"check_security": None},
+        "author_depth": {"junior": None, "mid": 1.0},
+        "enabled_tools": ["ruff", None],
+    }
+
+    cleaned = _clean_review_config_payload(payload)
+
+    assert cleaned["domain_priorities"] == {"security": 1.6}
+    assert cleaned["tool_weights"] == {}
+    assert cleaned["author_depth"] == {"mid": 1.0}
+    assert cleaned["enabled_tools"] == ["ruff"]

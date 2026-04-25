@@ -432,6 +432,23 @@ def score_completion_locally(
     return round(normalized, 3)
 
 
+def _clean_review_config_payload(review_config: dict | None) -> dict | None:
+    """Drop Dataset-introduced nulls from sparse nested ReviewConfig dicts."""
+    if not isinstance(review_config, dict):
+        return review_config
+
+    cleaned = dict(review_config)
+    for key in ("tool_weights", "domain_priorities", "author_depth"):
+        value = cleaned.get(key)
+        if isinstance(value, dict):
+            cleaned[key] = {k: v for k, v in value.items() if v is not None}
+    for key in ("enabled_tools", "planned_tools", "critical_paths", "custom_rules"):
+        value = cleaned.get(key)
+        if isinstance(value, list):
+            cleaned[key] = [item for item in value if item is not None]
+    return cleaned
+
+
 def make_env_reward_func(
     review_config: dict | None = None,
     task_path: str | None = None,
@@ -457,7 +474,14 @@ def make_env_reward_func(
         rewards = []
         for completion, tid, replay, cfg_payload in zip(completions, task_ids, replays, review_configs):
             rewards.append(
-                score_completion_locally(completion, tid, replay, cfg_payload, task_path, counter=counter)
+                score_completion_locally(
+                    completion,
+                    tid,
+                    replay,
+                    _clean_review_config_payload(cfg_payload),
+                    task_path,
+                    counter=counter,
+                )
             )
         return rewards
 
