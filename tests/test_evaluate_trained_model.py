@@ -72,9 +72,18 @@ def test_summarize_results_computes_accuracy_and_return():
 def test_generate_action_text_accepts_batch_encoding_output():
     torch = pytest.importorskip("torch")
 
-    class BatchEncodingLike(dict):
+    class BatchEncodingLike:
+        def __init__(self, data):
+            self.data = data
+
+        def __getitem__(self, key):
+            return self.data[key]
+
+        def keys(self):
+            return self.data.keys()
+
         def to(self, device):
-            return BatchEncodingLike({key: value.to(device) for key, value in self.items()})
+            return BatchEncodingLike({key: value.to(device) for key, value in self.data.items()})
 
     class FakeTokenizer:
         eos_token_id = 0

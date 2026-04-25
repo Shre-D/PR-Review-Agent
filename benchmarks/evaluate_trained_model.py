@@ -81,8 +81,8 @@ def generate_action_text(model, tokenizer, messages: list[dict[str, str]], max_n
     if hasattr(encoded, "to"):
         encoded = encoded.to(device)
 
-    if isinstance(encoded, dict):
-        model_inputs = dict(encoded)
+    if hasattr(encoded, "keys") and "input_ids" in encoded.keys():
+        model_inputs = {key: encoded[key] for key in encoded.keys()}
         input_ids = model_inputs["input_ids"]
     else:
         input_ids = encoded
