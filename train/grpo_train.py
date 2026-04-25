@@ -68,6 +68,7 @@ except ImportError as exc:
 
 SYSTEM_PROMPT = """\
 You are a code reviewer. For each step output a JSON tool call only — no prose.
+Do not output hidden reasoning, <think> blocks, markdown, or explanations.
 {"tool_name": "<name>", "arguments": {}}
 
 Tools: check_security, check_quality, check_build_and_types, check_tests, check_config, submit_review, escalate.

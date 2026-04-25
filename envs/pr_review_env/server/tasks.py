@@ -536,7 +536,7 @@ def task_review_config(
         config["domain_priorities"] = {
             key: value
             for key, value in config.get("domain_priorities", {}).items()
-            if key in set(task.risk_domains)
+            if key in set(task.risk_domains) and value is not None
         }
         risk_domains = set(task.risk_domains)
         kept_rules = []

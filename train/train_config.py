@@ -40,7 +40,7 @@ class TrainingConfig:
     gradient_accumulation_steps: int = 8  # effective batch = 8
     learning_rate: float = 2e-4           # higher than full-FT because LoRA
     num_generations: int = 4             # rollouts per prompt (GRPO G)
-    max_new_tokens: int = 128
+    max_new_tokens: int = 256
     warmup_ratio: float = 0.05
     lr_scheduler_type: str = "cosine"
 

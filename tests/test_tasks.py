@@ -1,3 +1,4 @@
+from envs.pr_review_env.models import ReviewConfig
 from envs.pr_review_env.server.tasks import get_task_by_id, load_tasks, task_review_config
 
 
@@ -33,6 +34,7 @@ def test_task_review_config_short_keeps_loader_context_small():
     assert task.context_requirements
     assert task.expected_evidence
     assert config["custom_rules"]
+    ReviewConfig.model_validate(config)
 
 
 def test_task_review_config_can_be_empty_or_off():
