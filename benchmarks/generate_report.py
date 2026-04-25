@@ -6,7 +6,7 @@ Reads:
   grpo_checkpoint/training_log.csv  — per-step loss/reward from RewardLogCallback
 
 Writes:
-  rewards/comparison_report.png  — 4-panel figure
+  rewards/comparison_report.png  — 6-panel figure
 
 Usage:
   python benchmarks/generate_report.py

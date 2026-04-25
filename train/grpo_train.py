@@ -184,10 +184,16 @@ def _action_with_state_args(action: PRReviewAction, obs: PRReviewObservation) ->
 
 
 def training_prompt(obs: PRReviewObservation, review_config: dict | None = None) -> str:
+    route = review_requirements(obs, review_config)
     return "\n\n".join(
         [
             SYSTEM_PROMPT.strip(),
             build_obs_prompt(obs, review_config),
+            (
+                "Routing rule: collect at least "
+                f"{route['min_tools']} evidence tools before any terminal verdict."
+            ),
+            "Prefer an evidence tool first. Final verdicts before the evidence budget are rejected.",
             "Output exactly one JSON tool call.",
         ]
     )

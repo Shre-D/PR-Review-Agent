@@ -61,6 +61,36 @@ def test_terminal_reward_prefers_correct_verdict_with_evidence():
     assert reward > 0.9
 
 
+def test_terminal_reward_penalizes_early_correct_submit():
+    task = _task()
+    reward = terminal_reward(
+        task,
+        "reject",
+        {"check_security": {"score": 0.1}},
+        min_tools=2,
+    )
+
+    assert reward < -2.4
+
+
+def test_terminal_reward_rewards_extra_supportive_evidence():
+    task = _task(risk_domains=["security", "quality"])
+    one_tool = terminal_reward(
+        task,
+        "reject",
+        {"check_security": {"score": 0.5}},
+        min_tools=1,
+    )
+    two_tools = terminal_reward(
+        task,
+        "reject",
+        {"check_security": {"score": 0.5}, "check_quality": {"score": 0.5}},
+        min_tools=2,
+    )
+
+    assert two_tools > one_tool
+
+
 def test_config_tool_weights_change_aggregate_score():
     score = aggregate_tool_scores(
         {

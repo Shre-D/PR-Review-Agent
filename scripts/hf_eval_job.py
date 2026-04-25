@@ -21,6 +21,19 @@ def run(command: list[str], cwd: Path | None = None, env: dict[str, str] | None 
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
+def upload_file_if_exists(api: HfApi, repo_id: str, source: Path, destination: str) -> None:
+    if not source.exists():
+        print(f"Skipping missing artifact: {source}", flush=True)
+        return
+    api.upload_file(
+        repo_id=repo_id,
+        repo_type="model",
+        path_or_fileobj=str(source),
+        path_in_repo=destination,
+    )
+    print(f"Uploaded artifact: {destination}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a PR Review checkpoint on HF Jobs.")
     parser.add_argument("--repo-url", default=os.getenv("REPO_URL", ""))
@@ -78,7 +91,7 @@ def main() -> None:
         local_dir=checkpoint_dir,
     )
 
-    env = {**os.environ, "PR_REVIEW_TOOL_BACKEND": "heuristic"}
+    env = {**os.environ, "PR_REVIEW_TOOL_BACKEND": "heuristic", "MPLCONFIGDIR": "/tmp/matplotlib"}
     rewards_dir = repo_dir / "rewards"
     rewards_dir.mkdir(exist_ok=True)
 
@@ -113,6 +126,22 @@ def main() -> None:
     if int(args.eval_limit) > 0:
         trained_eval_command.extend(["--limit", args.eval_limit])
     run(trained_eval_command, cwd=repo_dir, env=env)
+    run(
+        [
+            "python",
+            "benchmarks/generate_report.py",
+            "--baseline",
+            str(rewards_dir / "baseline_eval.json"),
+            "--trained",
+            str(rewards_dir / "trained_eval.json"),
+            "--log",
+            str(checkpoint_dir / "training_log.csv"),
+            "--output",
+            str(rewards_dir / "comparison_report.png"),
+        ],
+        cwd=repo_dir,
+        env=env,
+    )
 
     api = HfApi()
     api.upload_folder(
@@ -121,6 +150,7 @@ def main() -> None:
         folder_path=str(rewards_dir),
         path_in_repo="artifacts/rewards",
     )
+    upload_file_if_exists(api, args.hub_model_id, rewards_dir / "comparison_report.png", "artifacts/comparison_report.png")
     print(f"Uploaded eval artifacts to https://huggingface.co/{args.hub_model_id}", flush=True)
 
 

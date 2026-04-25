@@ -38,6 +38,10 @@ def upload_file_if_exists(api: HfApi, repo_id: str, source: Path, destination: s
     print(f"Uploaded artifact: {destination}", flush=True)
 
 
+def upload_report_if_exists(api: HfApi, repo_id: str, source: Path) -> None:
+    upload_file_if_exists(api, repo_id, source, "artifacts/comparison_report.png")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train PR Review GRPO on Hugging Face Jobs.")
     parser.add_argument("--repo-url", default=os.getenv("REPO_URL", ""))
@@ -91,7 +95,7 @@ def main() -> None:
     )
     run(["python", "tasks/build_task_bank.py", "--print-summary"], cwd=repo_dir)
 
-    env = {**os.environ, "PR_REVIEW_TOOL_BACKEND": "heuristic"}
+    env = {**os.environ, "PR_REVIEW_TOOL_BACKEND": "heuristic", "MPLCONFIGDIR": "/tmp/matplotlib"}
     output_dir = repo_dir / "grpo_checkpoint"
     rewards_dir = repo_dir / "rewards"
     rewards_dir.mkdir(exist_ok=True)
@@ -168,6 +172,22 @@ def main() -> None:
         cwd=repo_dir,
         env=env,
     )
+    run(
+        [
+            "python",
+            "benchmarks/generate_report.py",
+            "--baseline",
+            str(rewards_dir / "baseline_eval.json"),
+            "--trained",
+            str(rewards_dir / "trained_eval.json"),
+            "--log",
+            str(output_dir / "training_log.csv"),
+            "--output",
+            str(rewards_dir / "comparison_report.png"),
+        ],
+        cwd=repo_dir,
+        env=env,
+    )
 
     api.upload_folder(
         repo_id=args.hub_model_id,
@@ -175,6 +195,7 @@ def main() -> None:
         folder_path=str(rewards_dir),
         path_in_repo="artifacts/rewards",
     )
+    upload_report_if_exists(api, args.hub_model_id, rewards_dir / "comparison_report.png")
     api.upload_file(
         repo_id=args.hub_model_id,
         repo_type="model",

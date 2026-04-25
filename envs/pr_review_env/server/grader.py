@@ -246,15 +246,23 @@ def terminal_reward(
 
     if normalized == expected:
         if early_submit:
-            return -2.1
+            # Correct verdicts that skip the evidence budget should stay close
+            # to the floor so the model learns to collect evidence first.
+            return -2.55
         if supportive_tools >= 1:
-            return round(0.95 + evidence_alignment_bonus(task, tool_results, normalized, config), 3)
+            support_bonus = min(0.15, 0.05 * max(0, supportive_tools - 1))
+            return round(
+                0.95
+                + support_bonus
+                + evidence_alignment_bonus(task, tool_results, normalized, config),
+                3,
+            )
         return -1.45
 
     if normalized == "escalate" and expected in {"reject", "request_changes"}:
-        return -0.8
+        return -1.05 if early_submit else -0.8
 
-    return -2.65
+    return -2.83 if early_submit else -2.65
 
 
 def get_scoring_logic() -> dict[str, Any]:
@@ -267,10 +275,12 @@ def get_scoring_logic() -> dict[str, Any]:
         "duplicate_raw_reward": RAW_NEAR_FLOOR,
         "efficiency_decay_step": -0.03,
         "terminal_correct_base": 0.95,
-        "terminal_correct_early_submit": -2.10,
+        "terminal_correct_early_submit": -2.55,
         "terminal_correct_no_supportive_tool": -1.45,
         "terminal_escalate_high_risk": -0.80,
+        "terminal_escalate_early_submit": -1.05,
         "terminal_wrong": -2.65,
+        "terminal_wrong_early_submit": -2.83,
         "evidence_alignment_max": 0.25,
         "tool_penalties": {
             "check_security": 0.45,
