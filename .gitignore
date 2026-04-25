@@ -11,9 +11,12 @@ grpo_checkpoint/
 checkpoints/
 wandb/
 *.safetensors
+train/*.jsonl
 
 # Logs
 rewards/*.json
+!rewards/baseline_eval.json
+!rewards/trained_eval.json
 research/*.md
 *.log
 
@@ -31,3 +34,6 @@ Thumbs.db
 
 # Hackathon scratch
 scratch/
+
+#ai
+.codex

@@ -1,0 +1,452 @@
+{
+  "heuristic": {
+    "policy": "heuristic",
+    "episodes": 65,
+    "accuracy": 0.662,
+    "mean_episode_return": 0.651,
+    "by_language": {
+      "go": {
+        "episodes": 10,
+        "accuracy": 0.6,
+        "mean_episode_return": 0.31
+      },
+      "java": {
+        "episodes": 8,
+        "accuracy": 0.5,
+        "mean_episode_return": 0.652
+      },
+      "javascript": {
+        "episodes": 2,
+        "accuracy": 0.0,
+        "mean_episode_return": -0.32
+      },
+      "python": {
+        "episodes": 14,
+        "accuracy": 0.714,
+        "mean_episode_return": 0.715
+      },
+      "rust": {
+        "episodes": 9,
+        "accuracy": 0.556,
+        "mean_episode_return": 0.343
+      },
+      "typescript": {
+        "episodes": 8,
+        "accuracy": 0.5,
+        "mean_episode_return": 0.372
+      },
+      "yaml": {
+        "episodes": 14,
+        "accuracy": 1.0,
+        "mean_episode_return": 1.324
+      }
+    },
+    "by_file_type": {
+      "build_manifest": {
+        "episodes": 6,
+        "accuracy": 0.333,
+        "mean_episode_return": 0.349
+      },
+      "dockerfile": {
+        "episodes": 6,
+        "accuracy": 0.667,
+        "mean_episode_return": 0.923
+      },
+      "github_actions": {
+        "episodes": 8,
+        "accuracy": 1.0,
+        "mean_episode_return": 1.05
+      },
+      "gitignore": {
+        "episodes": 5,
+        "accuracy": 1.0,
+        "mean_episode_return": 0.882
+      },
+      "go": {
+        "episodes": 10,
+        "accuracy": 0.6,
+        "mean_episode_return": 0.31
+      },
+      "java": {
+        "episodes": 8,
+        "accuracy": 0.5,
+        "mean_episode_return": 0.652
+      },
+      "javascript": {
+        "episodes": 2,
+        "accuracy": 0.0,
+        "mean_episode_return": -0.32
+      },
+      "python": {
+        "episodes": 12,
+        "accuracy": 0.667,
+        "mean_episode_return": 0.582
+      },
+      "rust": {
+        "episodes": 9,
+        "accuracy": 0.556,
+        "mean_episode_return": 0.343
+      },
+      "typescript": {
+        "episodes": 8,
+        "accuracy": 0.5,
+        "mean_episode_return": 0.372
+      },
+      "yaml": {
+        "episodes": 14,
+        "accuracy": 1.0,
+        "mean_episode_return": 1.214
+      }
+    },
+    "examples": [
+      {
+        "task_id": "py_sql_injection",
+        "primary_language": "python",
+        "changed_file_types": [
+          "python"
+        ],
+        "expected_verdict": "reject",
+        "predicted_verdict": "reject",
+        "episode_return": 1.423,
+        "tools_called": [
+          "check_security",
+          "check_quality",
+          "check_tests",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "ts_eval_template",
+        "primary_language": "typescript",
+        "changed_file_types": [
+          "typescript"
+        ],
+        "expected_verdict": "reject",
+        "predicted_verdict": "reject",
+        "episode_return": 1.423,
+        "tools_called": [
+          "check_security",
+          "check_quality",
+          "check_tests",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "go_clean_refactor",
+        "primary_language": "go",
+        "changed_file_types": [
+          "go"
+        ],
+        "expected_verdict": "approve",
+        "predicted_verdict": "approve",
+        "episode_return": 0.45,
+        "tools_called": [
+          "check_security",
+          "check_build_and_types",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "rust_unwrap_io",
+        "primary_language": "rust",
+        "changed_file_types": [
+          "rust"
+        ],
+        "expected_verdict": "request_changes",
+        "predicted_verdict": "approve",
+        "episode_return": -0.32,
+        "tools_called": [
+          "check_security",
+          "check_quality",
+          "check_build_and_types",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "docker_root_user",
+        "primary_language": "python",
+        "changed_file_types": [
+          "dockerfile"
+        ],
+        "expected_verdict": "request_changes",
+        "predicted_verdict": "request_changes",
+        "episode_return": 1.499,
+        "tools_called": [
+          "check_security",
+          "check_config",
+          "check_quality",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "gha_permissions_write",
+        "primary_language": "yaml",
+        "changed_file_types": [
+          "yaml",
+          "github_actions"
+        ],
+        "expected_verdict": "request_changes",
+        "predicted_verdict": "request_changes",
+        "episode_return": 1.529,
+        "tools_called": [
+          "check_security",
+          "check_config",
+          "check_build_and_types",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "gitignore_secret_file",
+        "primary_language": "yaml",
+        "changed_file_types": [
+          "gitignore"
+        ],
+        "expected_verdict": "request_changes",
+        "predicted_verdict": "request_changes",
+        "episode_return": 1.481,
+        "tools_called": [
+          "check_security",
+          "check_config",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "mixed_python_workflow",
+        "primary_language": "python",
+        "changed_file_types": [
+          "python",
+          "yaml",
+          "github_actions"
+        ],
+        "expected_verdict": "approve",
+        "predicted_verdict": "approve",
+        "episode_return": 0.57,
+        "tools_called": [
+          "check_security",
+          "check_config",
+          "check_quality",
+          "check_build_and_types",
+          "check_tests",
+          "submit_review"
+        ]
+      }
+    ]
+  },
+  "random": {
+    "policy": "random",
+    "episodes": 65,
+    "accuracy": 0.4,
+    "mean_episode_return": -0.029,
+    "by_language": {
+      "go": {
+        "episodes": 10,
+        "accuracy": 0.6,
+        "mean_episode_return": 0.138
+      },
+      "java": {
+        "episodes": 8,
+        "accuracy": 0.125,
+        "mean_episode_return": -0.348
+      },
+      "javascript": {
+        "episodes": 2,
+        "accuracy": 0.0,
+        "mean_episode_return": -0.5
+      },
+      "python": {
+        "episodes": 14,
+        "accuracy": 0.357,
+        "mean_episode_return": -0.111
+      },
+      "rust": {
+        "episodes": 9,
+        "accuracy": 0.444,
+        "mean_episode_return": 0.014
+      },
+      "typescript": {
+        "episodes": 8,
+        "accuracy": 0.625,
+        "mean_episode_return": 0.313
+      },
+      "yaml": {
+        "episodes": 14,
+        "accuracy": 0.357,
+        "mean_episode_return": -0.038
+      }
+    },
+    "by_file_type": {
+      "build_manifest": {
+        "episodes": 6,
+        "accuracy": 0.5,
+        "mean_episode_return": 0.14
+      },
+      "dockerfile": {
+        "episodes": 6,
+        "accuracy": 0.0,
+        "mean_episode_return": -0.487
+      },
+      "github_actions": {
+        "episodes": 8,
+        "accuracy": 0.5,
+        "mean_episode_return": -0.05
+      },
+      "gitignore": {
+        "episodes": 5,
+        "accuracy": 0.8,
+        "mean_episode_return": 0.417
+      },
+      "go": {
+        "episodes": 10,
+        "accuracy": 0.6,
+        "mean_episode_return": 0.138
+      },
+      "java": {
+        "episodes": 8,
+        "accuracy": 0.125,
+        "mean_episode_return": -0.348
+      },
+      "javascript": {
+        "episodes": 2,
+        "accuracy": 0.0,
+        "mean_episode_return": -0.5
+      },
+      "python": {
+        "episodes": 12,
+        "accuracy": 0.417,
+        "mean_episode_return": -0.046
+      },
+      "rust": {
+        "episodes": 9,
+        "accuracy": 0.444,
+        "mean_episode_return": 0.014
+      },
+      "typescript": {
+        "episodes": 8,
+        "accuracy": 0.625,
+        "mean_episode_return": 0.313
+      },
+      "yaml": {
+        "episodes": 14,
+        "accuracy": 0.571,
+        "mean_episode_return": 0.154
+      }
+    },
+    "examples": [
+      {
+        "task_id": "py_sql_injection",
+        "primary_language": "python",
+        "changed_file_types": [
+          "python"
+        ],
+        "expected_verdict": "reject",
+        "predicted_verdict": "approve",
+        "episode_return": -0.5,
+        "tools_called": [
+          "check_build_and_types",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "ts_eval_template",
+        "primary_language": "typescript",
+        "changed_file_types": [
+          "typescript"
+        ],
+        "expected_verdict": "reject",
+        "predicted_verdict": "reject",
+        "episode_return": 1.267,
+        "tools_called": [
+          "check_security",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "go_clean_refactor",
+        "primary_language": "go",
+        "changed_file_types": [
+          "go"
+        ],
+        "expected_verdict": "approve",
+        "predicted_verdict": "approve",
+        "episode_return": 0.4,
+        "tools_called": [
+          "check_build_and_types",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "rust_unwrap_io",
+        "primary_language": "rust",
+        "changed_file_types": [
+          "rust"
+        ],
+        "expected_verdict": "request_changes",
+        "predicted_verdict": "approve",
+        "episode_return": -0.5,
+        "tools_called": [
+          "check_config",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "docker_root_user",
+        "primary_language": "python",
+        "changed_file_types": [
+          "dockerfile"
+        ],
+        "expected_verdict": "request_changes",
+        "predicted_verdict": "approve",
+        "episode_return": -0.5,
+        "tools_called": [
+          "check_build_and_types",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "gha_permissions_write",
+        "primary_language": "yaml",
+        "changed_file_types": [
+          "yaml",
+          "github_actions"
+        ],
+        "expected_verdict": "request_changes",
+        "predicted_verdict": "approve",
+        "episode_return": -0.5,
+        "tools_called": [
+          "check_build_and_types",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "gitignore_secret_file",
+        "primary_language": "yaml",
+        "changed_file_types": [
+          "gitignore"
+        ],
+        "expected_verdict": "request_changes",
+        "predicted_verdict": "request_changes",
+        "episode_return": 1.305,
+        "tools_called": [
+          "check_config",
+          "submit_review"
+        ]
+      },
+      {
+        "task_id": "mixed_python_workflow",
+        "primary_language": "python",
+        "changed_file_types": [
+          "python",
+          "yaml",
+          "github_actions"
+        ],
+        "expected_verdict": "approve",
+        "predicted_verdict": "approve",
+        "episode_return": 0.4,
+        "tools_called": [
+          "check_build_and_types",
+          "submit_review"
+        ]
+      }
+    ]
+  }
+}
