@@ -16,9 +16,8 @@ from ..models import (
 )
 from .context_loader import load_review_config
 from .grader import (
+    RAW_NEAR_FLOOR,
     evidence_penalties,
-    normalize_reward,
-    reward_near_floor,
     outcome_summary,
     step_reward,
     terminal_reward,
@@ -171,10 +170,9 @@ class PRReviewEnv(MCPEnvironment):
                     f"submit_review redirected: confidence={conf_value:.2f} < {threshold:.2f}, gather more evidence"
                 )
                 reward = round(reward - 0.10, 3)
-                normalized = normalize_reward(reward)
-                self._state.cumulative_reward = round(self._state.cumulative_reward + normalized, 4)
+                self._state.cumulative_reward = round(self._state.cumulative_reward + reward, 4)
                 return self._observation(
-                    reward=normalized,
+                    reward=reward,
                     last_tool_name="submit_review",
                     last_tool_result={
                         "status": "low_confidence",
@@ -197,10 +195,10 @@ class PRReviewEnv(MCPEnvironment):
                     f"{submitted_verdict} redirected: collected {len(self._state.tool_results)}"
                     f"/{route['min_tools']} evidence tools"
                 )
-                reward = reward_near_floor()
-                self._state.cumulative_reward = round(self._state.cumulative_reward + reward, 4)
+                redirect_penalty = RAW_NEAR_FLOOR
+                self._state.cumulative_reward = round(self._state.cumulative_reward + redirect_penalty, 4)
                 return self._observation(
-                    reward=reward,
+                    reward=redirect_penalty,
                     last_tool_name=action.tool_name,
                     last_tool_result={
                         **result_payload,
@@ -231,10 +229,9 @@ class PRReviewEnv(MCPEnvironment):
                 f"terminal verdict={submitted_verdict} expected={self._task.expected_verdict}"
             )
 
-        normalized = normalize_reward(reward)
-        self._state.cumulative_reward = round(self._state.cumulative_reward + normalized, 4)
+        self._state.cumulative_reward = round(self._state.cumulative_reward + reward, 4)
         return self._observation(
-            reward=normalized,
+            reward=reward,
             last_tool_name=action.tool_name,
             last_tool_result=result_payload,
             final_verdict=final_verdict,

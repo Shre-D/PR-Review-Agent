@@ -6,13 +6,14 @@ from train.grpo_train import (
     score_completion_locally,
 )
 from envs.pr_review_env.models import PRReviewAction, PRReviewObservation
+from envs.pr_review_env.server.grader import RAW_FLOOR
 from train.train_config import TrainingConfig
 
 
 def test_score_completion_penalizes_malformed_output():
     reward = score_completion_locally("not json", "py_sql_injection")
 
-    assert reward == 0.01
+    assert reward == RAW_FLOOR
 
 
 def test_action_with_state_args_adds_diff_for_analysis_tool():
@@ -61,8 +62,8 @@ def test_score_completion_replays_prior_state():
         replay_actions=replay,
     )
 
-    # score_completion_locally returns the normalized environment reward.
-    # Evidence-backed submits should still beat unsupported correct verdicts.
+    # score_completion_locally returns raw rewards.
+    # Evidence-backed submits should beat unsupported correct verdicts.
     assert reward > unsupported_reward
 
 
@@ -78,7 +79,7 @@ def test_reward_func_scores_batch_with_task_ids():
     )
 
     assert rewards[0] > 0
-    assert rewards[1] == 0.01
+    assert rewards[1] == RAW_FLOOR
 
 
 def test_build_training_state_rows_contains_replayable_state():

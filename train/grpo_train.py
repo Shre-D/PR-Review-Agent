@@ -34,7 +34,13 @@ if str(ROOT) not in sys.path:
 
 from envs.pr_review_env.models import PRReviewAction, PRReviewObservation
 from envs.pr_review_env.server.context_loader import load_review_config
-from envs.pr_review_env.server.grader import reward_floor, reward_near_floor
+from envs.pr_review_env.server.grader import (
+    RAW_FLOOR,
+    RAW_NEAR_FLOOR,
+    normalize_reward,
+    reward_floor,
+    reward_near_floor,
+)
 from envs.pr_review_env.server.pr_review_env import PRReviewEnv
 from envs.pr_review_env.server.tasks import load_tasks, task_review_config
 from benchmarks.run_baselines import decide_final_verdict, heuristic_policy
@@ -363,18 +369,22 @@ def score_completion_locally(
     task_path: str | None = None,
     counter: TrainingMetricsCounter | None = None,
 ) -> float:
+    """Score a single completion by replaying it in a local env.
+
+    Returns the **raw** reward (not normalized). GRPO needs wide,
+    meaningful gaps between outcomes to compute useful advantages.
+    """
     text = _completion_to_text(completion)
     payload = extract_action_payload(text)
     if payload is None:
-        floor = reward_floor()
         if counter is not None:
             counter.record(
                 tool_name="invalid",
-                normalized_reward=floor,
-                raw_reward=-2.83,
+                normalized_reward=reward_floor(),
+                raw_reward=RAW_FLOOR,
                 parse_failed=True,
             )
-        return floor
+        return float(RAW_FLOOR)
 
     env = PRReviewEnv(seed=7, task_path=task_path, review_config=review_config)
     obs = env.reset(task_id=task_id)
@@ -384,41 +394,39 @@ def score_completion_locally(
             replay_action = PRReviewAction.model_validate(replay_payload)
             obs = env.step(_action_with_state_args(replay_action, obs))
             if obs.done:
-                floor = reward_floor()
                 if counter is not None:
                     counter.record(
                         tool_name=str(payload.get("tool_name", "invalid")),
-                        normalized_reward=floor,
-                        raw_reward=-2.83,
+                        normalized_reward=reward_floor(),
+                        raw_reward=RAW_FLOOR,
                         env_error=True,
                     )
-                return floor
+                return float(RAW_FLOOR)
 
         parsed = parse_action(text)
         action = _action_with_state_args(parsed, obs)
         obs = env.step(action)
     except Exception:
-        floor = reward_floor()
         if counter is not None:
             counter.record(
                 tool_name=str(payload.get("tool_name", "invalid")),
-                normalized_reward=floor,
-                raw_reward=-2.83,
+                normalized_reward=reward_floor(),
+                raw_reward=RAW_FLOOR,
                 env_error=True,
             )
-        return floor
+        return float(RAW_FLOOR)
 
-    normalized = float(obs.reward or 0.0)
+    raw_reward = float(obs.reward or 0.0)
     if obs.last_tool_result.get("error"):
-        normalized = reward_near_floor()
+        raw_reward = float(RAW_NEAR_FLOOR)
         if counter is not None:
             counter.record(
                 tool_name=action.tool_name,
-                normalized_reward=normalized,
-                raw_reward=-2.55,
+                normalized_reward=normalize_reward(raw_reward),
+                raw_reward=raw_reward,
                 env_error=True,
             )
-        return round(normalized, 3)
+        return round(raw_reward, 3)
 
     if counter is not None:
         terminal = action.tool_name in {"submit_review", "escalate"}
@@ -426,19 +434,14 @@ def score_completion_locally(
         if terminal and expected_verdict is not None:
             submitted = obs.last_tool_result.get("verdict", action.tool_name)
             correct = str(submitted).strip().lower() == str(expected_verdict).strip().lower()
-        # Approximate raw reward by inverting the normalize_reward map.
-        # normalize_reward: norm = 0.01 + (raw - RAW_MIN) / (RAW_MAX - RAW_MIN) * 0.98
-        # Solve for raw:
-        raw_min, raw_max = -2.83, 1.51
-        raw = (normalized - 0.01) / 0.98 * (raw_max - raw_min) + raw_min
         counter.record(
             tool_name=action.tool_name,
-            normalized_reward=normalized,
-            raw_reward=raw,
+            normalized_reward=normalize_reward(raw_reward),
+            raw_reward=raw_reward,
             terminal=terminal,
             correct=correct,
         )
-    return round(normalized, 3)
+    return round(raw_reward, 3)
 
 
 def _clean_review_config_payload(review_config: dict | None) -> dict | None:

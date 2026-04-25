@@ -65,22 +65,26 @@ The system frames PR code review as a **tool-routing problem**: the policy must 
 
 - **`server/pr_review_env.py`** — `PRReviewEnv(MCPEnvironment)`: the OpenEnv-compatible environment. `reset()` loads a task; `step(PRReviewAction)` dispatches tool calls via FastMCP, accumulates state, and computes rewards. Hard cap of 8 inference-time steps prevents runaway loops.
 - **`server/tools.py`** — Five MCP tools registered via `@mcp.tool`: `check_security`, `check_quality`, `check_build_and_types`, `check_tests`, `check_config`. Two terminal tools: `submit_review` (verdict + confidence) and `escalate`. Each tool has a **heuristic mode** (pattern matching on diff text) and a **real-tool mode** (semgrep, ruff, pylint, radon, tsc, javac, go test, cargo check). Mode is controlled by `PR_REVIEW_TOOL_BACKEND` env var (`heuristic` | `hybrid` | default hybrid).
-- **`server/grader.py`** — Epistemically independent reward grader. Never reads SLM reasoning or confidence. Computes: `step_reward` (per tool call), `terminal_reward` (on verdict), `evidence_penalties` (contradiction checks), and `normalize_reward` (maps raw `[−2.83, +1.51]` to `[0.01, 0.99]`).
+- **`server/grader.py`** — Epistemically independent reward grader. Never reads SLM reasoning or confidence. Computes: `step_reward` (per tool call), `terminal_reward` (on verdict), `evidence_penalties` (contradiction checks), and `normalize_reward` (for display only). Raw rewards are returned directly to GRPO — no normalization in the training path.
 - **`server/tasks.py`** — `PRTask` dataclass. Loads from `tasks/tasks.jsonl` (seed), `tasks/comprehensive_tasks.jsonl` (13 multi-file tasks), or `tasks/all_tasks.jsonl` (combined 78 tasks).
 - **`server/context_loader.py`** — Structural loader that builds short per-task `ReviewConfig` from `docs/`. Loader modes: `short` (default for training), `empty`, `full`, `off`.
 - **`models.py`** — Pydantic models: `PRTask`, `PRReviewState`, `PRReviewObservation`, `PRReviewAction`, `PRReviewVerdict`, `ReviewConfig`.
 
 ### Reward design
 
-The reward function has one goal: make the policy learn that gathering the right evidence before deciding is worth more than guessing. Key values:
-- Correct verdict + relevant tool called: `+1.0` to `+1.25`
-- Correct verdict, no relevant tool: `+0.35` (right answer, no demonstrated process)
-- Wrong verdict: `−0.55`
-- Duplicate tool call: `−0.20` (per call)
-- Efficiency decay: `−0.03 × (step − decay_start)` where `decay_start` is tier-aware (2/4/6)
+The reward function has one goal: make the policy learn that gathering the right evidence before deciding is worth more than guessing. GRPO receives **raw** rewards (not normalized) so advantage computation sees meaningful gaps.
+
+Key raw values:
+- Correct verdict + relevant evidence: `+1.0` to `+1.4`
+- Correct verdict, early submit (insufficient evidence): `+0.2`
+- Correct verdict, no supportive tool: `−0.3`
+- Wrong verdict: `−0.8` (with evidence) / `−1.0` (early)
+- Novel relevant tool call: `+0.3`; novel irrelevant: `+0.1`
+- Duplicate tool call: `−0.4`
+- Efficiency decay: `−0.05 × (step − decay_start)` where `decay_start` is tier-aware (2/4/6)
 - Evidence penalties: `−0.40` for critical findings + approve, `−0.20` for all-clean + reject
 
-`risk_domains` on each task drive `relevant_tools()`: calling a tool that covers the task's risk domain earns an extra `+0.08` relevance bonus.
+`risk_domains` on each task drive `relevant_tools()`: calling a tool that covers the task's risk domain earns a `+0.2` relevance bonus (vs `+0.1` base for irrelevant tools).
 
 ### Training layer (`train/`)
 

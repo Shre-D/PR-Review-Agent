@@ -63,28 +63,28 @@ def step_reward(task, tool_name, tools_already_called, step_count) -> float:
         return 0.0  # terminal, handled separately
 
     if tool_name in tools_already_called:
-        return -0.20  # duplicate: strong, unambiguous penalty
+        return -0.4  # duplicate: clearly worse than any novel tool
 
-    reward = 0.05  # base: any novel tool call has value
+    reward = 0.1  # base: any novel tool call has value
 
     if tool_name in relevant_tools(task):
-        reward += 0.08  # relevance bonus: covers the risk domain
+        reward += 0.2  # relevance bonus: covers the risk domain
 
     decay_start = tier_decay_start(task.tier)  # 2 / 4 / 6
     if step_count > decay_start:
-        reward -= 0.03 * (step_count - decay_start)
+        reward -= 0.05 * (step_count - decay_start)
 
-    return round(reward, 3)
+    return round(max(-0.1, reward), 3)
 ```
 
 ### Explanation of Each Value
 
 | Signal                   | Value                               | Rationale                                                                                                                                                                                            |
 | ------------------------ | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Base reward (novel call) | `+0.05`                           | Zero base would make tool calls neutral on noisy episodes, risking the policy learning to skip evidence on easy tasks. Even a sanity-check tool on a clean diff is worth something.                  |
-| Relevance bonus          | `+0.08`                           | The primary shaping force at step level. The gap between `+0.13` (relevant) and `+0.05` (irrelevant) is the training signal that makes domain-awareness emerge.                                  |
-| Duplicate penalty        | `−0.20`                          | Deliberately harsh. Must exceed two base rewards combined (`2 × 0.05 = 0.10`). Ensures repeating is never preferable to doing something new, even on noisy episodes.                              |
-| Efficiency decay         | `−0.03 × (step − decay_start)` | Cumulative and tier-aware. On small tasks (`decay_start=2`), step 3 costs `−0.03`, step 4 costs `−0.06`, etc. On large tasks (`decay_start=6`), those same absolute step numbers are free. |
+| Base reward (novel call) | `+0.1`                            | Non-zero base ensures tool calls are always preferable to doing nothing. Even a sanity-check tool on a clean diff has value.                                                                         |
+| Relevance bonus          | `+0.2`                            | The primary shaping force at step level. The gap between `+0.3` (relevant) and `+0.1` (irrelevant) is `0.2` — wide enough for GRPO to compute meaningful advantages.                             |
+| Duplicate penalty        | `−0.4`                           | Clearly worse than any novel call. The gap from relevant (`+0.3`) to duplicate (`−0.4`) is `0.7`, ensuring repeating is never preferable.                                                         |
+| Efficiency decay         | `−0.05 × (step − decay_start)` | Cumulative and tier-aware. On small tasks (`decay_start=2`), step 3 costs `−0.05`, step 4 costs `−0.10`, etc. On large tasks (`decay_start=6`), those same step numbers are free.             |
 
 ### What Per-Step Reward Does NOT Do
 
@@ -99,41 +99,48 @@ Emitted once when the agent calls `submit_review` or `escalate`. This is the **d
 ### Formula
 
 ```python
-def terminal_reward(task, submitted_verdict, tool_results) -> float:
+def terminal_reward(task, submitted_verdict, tool_results,
+                    min_tools=None) -> float:
 
     correct = submitted_verdict.lower() == task.expected_verdict.lower()
     relevant_used = set(tool_results.keys()) & relevant_tools(task)
-    evidence = aggregate_tool_scores(tool_results)  # 0–1 weighted average
+    early_submit = len(tool_results) < min_tools
 
-    # Tier 1: correct verdict, supported by relevant evidence
-    if correct and len(relevant_used) >= 1:
-        return 1.0 + min(0.25, evidence * 0.25)  # up to 1.25
+    # Tier 1: correct verdict, sufficient evidence, relevant tools
+    if correct and not early_submit and len(relevant_used) >= 1:
+        support_bonus = min(0.2, 0.1 * max(0, len(relevant_used) - 1))
+        return 1.0 + support_bonus + evidence_alignment_bonus(...)  # up to ~1.4
 
-    # Tier 2: correct verdict, no domain-relevant tool called
-    if correct and len(relevant_used) == 0:
-        return 0.35  # right answer, lucky guess
+    # Tier 2: correct verdict, early submit (insufficient evidence)
+    if correct and early_submit:
+        return 0.2  # reachable but much worse than evidence-backed
 
-    # Tier 3: escalated when should have been reject/request_changes
+    # Tier 3: correct verdict, no supportive relevant tool
+    if correct:
+        return -0.3
+
+    # Tier 4: escalated when should have been reject/request_changes
     if (submitted_verdict == "escalate"
             and task.expected_verdict in {"reject", "request_changes"}):
-        return 0.10  # appropriate uncertainty, partial credit
+        return -0.4 if early_submit else -0.2
 
-    # Tier 4: wrong verdict
-    return -0.55
+    # Tier 5: wrong verdict
+    return -1.0 if early_submit else -0.8
 ```
 
 ### Tier Boundary Rationale
 
-| Tier                                 | Value                 | Reasoning                                                                                                                                                                                                                                                                                                               |
-| ------------------------------------ | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Correct + relevant evidence          | `+1.0` to `+1.25` | The ideal outcome. GRPO will exploit this gap.                                                                                                                                                                                                                                                                          |
-| Correct + no relevant evidence       | `+0.35`             | Not zero or negative — on easy tasks, the correct verdict really is obvious from the diff. Punishing correct answers would teach the agent to call irrelevant tools just to avoid the penalty.`+0.35` says "right answer, but no demonstrated process."                                                              |
-| Escalate on genuinely ambiguous task | `+0.10`             | Only applies when expected verdict was `reject` or `request_changes`. Escalation on a clean diff that should be approved earns `−0.55`. Escalation is not a safe default.                                                                                                                                        |
-| Wrong verdict                        | `−0.55`            | Not `−1.0`. At `−1.0`, expected value of guessing on a 50/50 uncertain task becomes `0.5×1.0 − 0.5×1.0 = 0.0`, making escalation always dominate. At `−0.55`, expected value of guessing = `0.5×1.0 − 0.5×0.55 = +0.225`, making guessing still worth attempting when evidence is reasonably strong. |
+| Tier                                   | Value                 | Reasoning                                                                                                                                                                                          |
+| -------------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Correct + relevant evidence            | `+1.0` to `+1.4`  | The ideal outcome. GRPO will exploit this gap.                                                                                                                                                     |
+| Correct + early submit                 | `+0.2`              | Positive but low. The model can reach this outcome without being destroyed, but it's clearly worse than gathering evidence. Previous iterations used `−2.55`, which made the model afraid to ever submit. |
+| Correct + no relevant evidence         | `−0.3`             | The model gathered enough tools to pass `min_tools` but none were relevant. Worse than early submit because the model wasted steps.                                                                |
+| Escalate on genuinely ambiguous task   | `−0.2` to `−0.4` | Only applies when expected verdict was `reject` or `request_changes`. Escalation is not a safe default.                                                                                            |
+| Wrong verdict                          | `−0.8` to `−1.0` | Strong negative signal. Early wrong is slightly worse than wrong with evidence.                                                                                                                    |
 
-### The +0.65 Gap: The Most Important Design Decision
+### The +0.8 Gap: The Most Important Design Decision
 
-The gap between Tier 1 minimum (`+1.0`) and Tier 2 (`+0.35`) is **+0.65**. This means the expected return for gathering relevant evidence before a correct verdict is roughly **2× the return** for guessing correctly without it. GRPO will find and exploit this gap — which is exactly the intended behavior.
+The gap between Tier 1 minimum (`+1.0`) and Tier 2 (`+0.2`) is **+0.8**. This means the expected return for gathering relevant evidence before a correct verdict is roughly **5× the return** for guessing correctly without it. GRPO will find and exploit this gap — which is exactly the intended behavior.
 
 ### Evidence Alignment Bonus
 
@@ -231,85 +238,83 @@ The ratio between an ideal episode and a wasteful one is approximately **3.5×**
 
 ---
 
-## Part 7: Worst-Case Analysis and Reward Normalization
+## Part 7: Worst-Case Analysis and Raw Reward Scale
 
 ### Finding the True Theoretical Floor
 
-The conversation identified that the worst possible episode involves: calling one tool once (novel, `+0.05`), then duplicating it forever. Because duplicate penalty and efficiency decay **both** apply to the same steps and stack, the reward diverges to `−∞` without a step cap. The practical floor is therefore determined by `max_steps` per tier.
+The worst possible episode involves: calling one tool once (novel, `+0.1`), then duplicating it. Because duplicate penalty and efficiency decay **both** apply to the same steps, the reward can go very negative without a step cap. The practical floor is determined by `max_steps` per tier.
 
 ### Worst Case (Large Task, `max_steps=9`, `decay_start=6`)
 
 | Steps              | Description                         | Reward                      |
 | ------------------ | ----------------------------------- | --------------------------- |
-| Step 1             | 1 novel irrelevant call             | `+0.05`                   |
-| Steps 2–6         | 5 duplicates                        | `5 × −0.20 = −1.00`    |
-| Step 7             | duplicate + decay `(7−6)`        | `−0.20 − 0.03 = −0.23` |
-| Step 8             | duplicate + decay `(8−6)`        | `−0.20 − 0.06 = −0.26` |
-| Step 9             | duplicate + decay `(9−6)`        | `−0.20 − 0.09 = −0.29` |
-| Terminal           | wrong verdict                       | `−0.55`                  |
+| Step 1             | 1 novel irrelevant call             | `+0.1`                    |
+| Steps 2–6         | 5 duplicates                        | `5 × −0.4 = −2.0`      |
+| Step 7             | duplicate + decay `(7−6)`        | `−0.4 − 0.05 = −0.45`  |
+| Step 8             | duplicate + decay `(8−6)`        | `−0.4 − 0.10 = −0.50`  |
+| Step 9             | duplicate + decay `(9−6)`        | `−0.4 − 0.15 = −0.55`  |
+| Terminal           | wrong verdict                       | `−1.0`                   |
 | Evidence penalties | critical+approve + warnings+approve | `−0.40 − 0.15 = −0.55` |
 
-**Total step penalties:** `−1.78`
-**Full worst case:** `0.05 − 1.78 − 0.55 − 0.55 = −2.83`
+**Full worst case:** `0.1 − 3.5 − 1.0 − 0.55 = −4.95` (clamped to `RAW_MIN = −1.5`)
 
 ### Best Case (Small Task, `decay_start=2`)
 
-- 2 relevant novel calls within `decay_start`
-- Correct verdict
-- Maximum evidence alignment bonus
+- 2 relevant novel calls within `decay_start`: `2 × 0.3 = +0.6`
+- Correct verdict with evidence: `+1.0` + support bonus `+0.1` + alignment `+0.25`
 - Zero penalties
 
-**Best case:** `+1.51`
+**Best case:** `+1.95` (clamped to `RAW_MAX = +1.5`)
 
-### Normalization Formula
-
-```
-RAW_MIN = -2.83
-RAW_MAX =  1.51
-span    =  4.34
-
-normalized = 0.01 + (raw + 2.83) / 4.34 × 0.98
-```
+### Raw Reward Constants
 
 ```python
-RAW_MIN = -2.83  # large task, max_steps=9, 8 duplicates after step 1,
-                 # wrong verdict, critical+approve + warnings+approve penalties,
-                 # efficiency decay on steps 7-9 stacked with duplicate penalty
-RAW_MAX =  1.51  # small task, 2 relevant novel calls, correct verdict,
-                 # max evidence alignment bonus, zero penalties
-
-def normalize_reward(raw: float) -> float:
-    clipped = max(RAW_MIN, min(RAW_MAX, raw))
-    return round(0.01 + (clipped + 2.83) / 4.34 * 0.98, 4)
+RAW_MIN = -1.5   # floor for GRPO
+RAW_MAX =  1.5   # ceiling for GRPO
+RAW_FLOOR = RAW_MIN        # malformed/error outputs
+RAW_NEAR_FLOOR = -1.0      # tool errors, redirects
 ```
 
-### Key Observations on Normalized Space
+### Why No Normalization for Training
 
-| Scenario                            | Raw Score  | Normalized Score | Notes                                                                     |
-| ----------------------------------- | ---------- | ---------------- | ------------------------------------------------------------------------- |
-| Ideal episode                       | `+1.51`  | ~`0.99`        | Best case                                                                 |
-| Correct verdict, evidence, no bonus | `+1.00`  | ~`0.86`        | Good                                                                      |
-| Wrong verdict, no penalties         | `−0.55` | ~`0.57`        | "Clean miss"                                                              |
-| Correct, lucky guess (no evidence)  | `+0.35`  | ~`0.74`        | Above midpoint but below evidenced correct                                |
-| Worst case                          | `−2.83` | `0.01`         | Floor                                                                     |
-| Normalized midpoint                 | `0.50`   | →               | Corresponds to raw score of ~`−0.73` (within the wrong-verdict region) |
+Previous iterations normalized raw rewards into `[0.01, 0.99]`:
 
-**The `0.50` midpoint** sits comfortably inside the wrong-verdict region, meaning the semantic split holds: anything above `0.50` is at least partially acceptable behavior; anything below is genuinely bad.
+```python
+normalized = 0.01 + (raw - RAW_MIN) / (RAW_MAX - RAW_MIN) * 0.98
+```
 
-**The wrong-verdict-no-penalty case landing at `0.57`** (above `0.50`) is intentional. A wrong verdict with no supporting tool calls and no evidence contradictions is a "clean miss" — the agent didn't do anything structurally wrong, it just got the answer wrong. The gap between `0.57` (wrong) and `0.74` (correct lucky guess) is the gradient that teaches evidence-gathering.
+This compressed the gap between a relevant tool call and an irrelevant one from `0.2` raw to ~`0.018` normalized. GRPO could not compute meaningful advantages from that signal, and reward variance collapsed to zero (mode collapse). The model converged to a single action and stopped learning.
 
-> **Note:** If wrong verdicts always sitting below `0.50` is desired regardless of penalties, `RAW_MIN` would need to shift to around `−1.10`. However, this would compress the catastrophic failure region and reduce gradient signal there, which is an explicit trade-off.
+**Raw rewards go directly to GRPO.** `normalize_reward()` still exists for display purposes (UI, logs) but is not in the training path.
+
+### Key Raw Reward Landmarks
+
+| Scenario                           | Raw Reward |
+| ---------------------------------- | ---------- |
+| Evidence-backed correct submit     | `+1.0` to `+1.4` |
+| Novel relevant tool                | `+0.3`    |
+| Early correct submit               | `+0.2`    |
+| Novel irrelevant tool              | `+0.1`    |
+| Escalate (high-risk task)          | `−0.2`   |
+| Correct, no supportive tool        | `−0.3`   |
+| Duplicate tool                     | `−0.4`   |
+| Wrong verdict (evidence)           | `−0.8`   |
+| Wrong verdict (early)              | `−1.0`   |
+| Malformed / error                  | `−1.5`   |
+
+The total spread is **~2.5** between best and worst training outcomes. GRPO sees this as clear advantage signal.
 
 ---
 
 ## Summary: Design Principles
 
 1. **Grader independence is non-negotiable.** No internal agent state, reasoning, or confidence scores are visible to the grader. This prevents gaming.
-2. **Evidence-gathering must dominate guessing.** The `+0.65` gap between evidenced correct and lucky correct is the single most important number in the system.
-3. **Escalation is not a safe default.** It only earns partial credit when the task was genuinely ambiguous (expected `reject`/`request_changes`). Escalating on clean diffs is penalized identically to wrong verdicts.
-4. **Both false negatives and false positives are penalized.** Approving critical findings (`−0.40`) and rejecting clean code (`−0.20`) are symmetric failure modes that the reward function explicitly addresses.
-5. **Tier-awareness is baked into reward structure.** The agent learns task-size sensitivity through `decay_start` differences, not through an explicit classification step.
-6. **Normalization preserves gradient structure.** The `[0.01, 0.99]` normalized range reflects genuine behavioral quality, with `0.50` falling semantically at the boundary between acceptable and bad behavior.
+2. **Evidence-gathering must dominate guessing.** The `+0.8` gap between evidence-backed correct (`+1.0`) and early correct (`+0.2`) is the single most important number in the system.
+3. **Raw rewards to GRPO.** No normalization in the training path. The reward scale is wide enough for GRPO to compute meaningful advantages.
+4. **Escalation is not a safe default.** It only earns partial credit when the task was genuinely ambiguous (expected `reject`/`request_changes`). Escalating on clean diffs is penalized identically to wrong verdicts.
+5. **Both false negatives and false positives are penalized.** Approving critical findings (`−0.40`) and rejecting clean code (`−0.20`) are symmetric failure modes that the reward function explicitly addresses.
+6. **Tier-awareness is baked into reward structure.** The agent learns task-size sensitivity through `decay_start` differences, not through an explicit classification step.
+7. **Early submit is reachable, not catastrophic.** `+0.2` for early correct submit lets the model learn to submit instead of looping forever, while still strongly incentivizing evidence collection.
 
 ```
 

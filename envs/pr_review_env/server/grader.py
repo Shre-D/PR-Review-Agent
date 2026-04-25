@@ -26,10 +26,10 @@ TIER_DECAY_START = {
     "hard": 6,
 }
 
-RAW_MIN = -2.83
-RAW_MAX = 1.51
+RAW_MIN = -1.5
+RAW_MAX = 1.5
 RAW_FLOOR = RAW_MIN
-RAW_NEAR_FLOOR = -2.55
+RAW_NEAR_FLOOR = -1.0
 
 _TERMINAL_TOOLS = {"submit_review", "escalate"}
 
@@ -189,23 +189,27 @@ def step_reward(
     step_count: int,
     config: ReviewConfig | None = None,
 ) -> float:
-    """Per-step reward for calling a tool (not submit_review/escalate).
-    - submit_review/escalate -> 0.0
-    - duplicate call -> 0.0 (no bonus, no negative — terminal handles correctness)
-    - new call: base +0.05; +0.08 if in relevant_tools(task)
-    - efficiency decay applied softly, but the step reward is clamped to >= 0.0
-      so intermediate exploration never punishes the policy. Wrong outcomes
-      are punished at submit time via terminal_reward.
-    Rounded to 3 decimal places."""
+    """Per-step raw reward for calling a tool (not submit_review/escalate).
+
+    These values are returned directly to GRPO — no normalization. The gaps
+    must be wide enough for GRPO to rank actions after advantage computation.
+
+    Scale (raw):
+        submit/escalate  ->  0.0  (scored via terminal_reward instead)
+        duplicate        -> -0.4  (clearly worse than any novel tool)
+        novel irrelevant ->  0.1  (ok, but noticeably below relevant)
+        novel relevant   ->  0.3  (+ domain priority scaling)
+        efficiency decay  -> -0.05 per step past tier threshold
+    """
     if tool_name in {"submit_review", "escalate"}:
         return 0.0
 
     if already_called:
-        return RAW_NEAR_FLOOR
+        return -0.4
 
-    reward = 0.05
+    reward = 0.1
     if tool_name in relevant_tools(task, config):
-        domain_bonus = 0.08
+        domain_bonus = 0.2
         if config:
             matching_domains = [
                 domain
@@ -219,9 +223,9 @@ def step_reward(
 
     decay_start = tier_decay_start(task)
     if step_count > decay_start:
-        reward -= 0.03 * (step_count - decay_start)
+        reward -= 0.05 * (step_count - decay_start)
 
-    return round(max(0.0, reward), 3)
+    return round(max(-0.1, reward), 3)
 
 
 def terminal_reward(
@@ -232,10 +236,15 @@ def terminal_reward(
     confidence: float | None = None,
     min_tools: int | None = None,
 ) -> float:
-    """Reward on submit_review or escalate.
-    Correct + route-sufficient relevant evidence -> high reward.
-    Correct but early/unsupported submit -> low reward.
-    Wrong verdict -> near-floor reward.
+    """Raw terminal reward on submit_review or escalate.
+
+    Scale (raw) — designed so GRPO sees clear advantage gaps:
+        correct + evidence-backed   ->  +1.0 to +1.4
+        correct + early submit      ->  +0.2  (reachable, but much worse)
+        correct + no supportive     ->  -0.3
+        escalate (high-risk wrong)  ->  -0.2 / -0.4
+        wrong + evidence            ->  -0.8
+        wrong + early               ->  -1.0
     """
     normalized = submitted_verdict.strip().lower()
     expected = task.expected_verdict.strip().lower()
@@ -246,23 +255,21 @@ def terminal_reward(
 
     if normalized == expected:
         if early_submit:
-            # Correct verdicts that skip the evidence budget should stay close
-            # to the floor so the model learns to collect evidence first.
-            return -2.55
+            return 0.2
         if supportive_tools >= 1:
-            support_bonus = min(0.15, 0.05 * max(0, supportive_tools - 1))
+            support_bonus = min(0.2, 0.1 * max(0, supportive_tools - 1))
             return round(
-                0.95
+                1.0
                 + support_bonus
                 + evidence_alignment_bonus(task, tool_results, normalized, config),
                 3,
             )
-        return -1.45
+        return -0.3
 
     if normalized == "escalate" and expected in {"reject", "request_changes"}:
-        return -1.05 if early_submit else -0.8
+        return -0.4 if early_submit else -0.2
 
-    return -2.83 if early_submit else -2.65
+    return -1.0 if early_submit else -0.8
 
 
 def get_scoring_logic() -> dict[str, Any]:
@@ -270,25 +277,19 @@ def get_scoring_logic() -> dict[str, Any]:
     return {
         "tool_weights": TOOL_WEIGHTS,
         "relevant_weight_multiplier": 1.5,
-        "base_step_reward": 0.05,
-        "relevance_bonus": 0.08,
-        "duplicate_raw_reward": RAW_NEAR_FLOOR,
-        "efficiency_decay_step": -0.03,
-        "terminal_correct_base": 0.95,
-        "terminal_correct_early_submit": -2.55,
-        "terminal_correct_no_supportive_tool": -1.45,
-        "terminal_escalate_high_risk": -0.80,
-        "terminal_escalate_early_submit": -1.05,
-        "terminal_wrong": -2.65,
-        "terminal_wrong_early_submit": -2.83,
+        "base_step_reward": 0.1,
+        "relevance_bonus": 0.2,
+        "duplicate_penalty": -0.4,
+        "efficiency_decay_step": -0.05,
+        "terminal_correct_evidence_base": 1.0,
+        "terminal_correct_early_submit": 0.2,
+        "terminal_correct_no_supportive_tool": -0.3,
+        "terminal_escalate_high_risk": -0.2,
+        "terminal_escalate_early_submit": -0.4,
+        "terminal_wrong": -0.8,
+        "terminal_wrong_early_submit": -1.0,
         "evidence_alignment_max": 0.25,
-        "tool_penalties": {
-            "check_security": 0.45,
-            "check_quality": 0.16,
-            "check_build_and_types": 0.14,
-            "check_tests": 0.12,
-            "check_config": 0.30,
-        },
+        "raw_range": [RAW_MIN, RAW_MAX],
     }
 
 

@@ -198,15 +198,16 @@ def _task_card(task: PRTask, obs_risk: str | None, obs_critical: list[str] | Non
 
 def scoring_guide_md() -> str:
     logic = get_scoring_logic()
-    tp = logic["tool_penalties"]
     return f"""
 ### 📊 Understanding the Scores
 
 | Metric | What it measures | Calculation |
 | :--- | :--- | :--- |
-| **Tool Score** | Severity of findings in a single tool call. | Starts at `1.0`. Subtracts penalty per finding (e.g., security=`-{tp['check_security']}`, tests=`-{tp['check_tests']}`). |
+| **Tool Score** | Severity of findings in a single tool call. | Starts at `1.0`. Subtracts penalty per finding based on severity. |
 | **Aggregate Score** | Overall "health" of the PR across all tools. | Weighted average of Tool Scores. Relevant tools are weighted **{logic['relevant_weight_multiplier']}x**. |
-| **Reward** | The RL signal for the agent's performance. | `Base(0.05) + Relevance Bonus(0.08) - Efficiency Penalties`. Terminal correct = `~{logic['terminal_correct_base']}`. |
+| **Reward** | The raw RL signal for the agent's performance. | Novel relevant tool = `+{logic['base_step_reward'] + logic['relevance_bonus']:.1f}`, novel irrelevant = `+{logic['base_step_reward']:.1f}`, duplicate = `{logic['duplicate_penalty']:.1f}`. Terminal correct + evidence = `+{logic['terminal_correct_evidence_base']:.1f}` to `+1.4`. |
+
+**Raw rewards** are returned directly to GRPO without normalisation. This ensures the RL optimizer sees meaningful gaps between actions (e.g., relevant tool `+0.3` vs irrelevant `+0.1`).
 
 **Why did the score change?**
 Tool scores are **not cumulative**. If `check_security` finds an issue (0.1) but `check_quality` is clean (1.0), the table shows both. The **Aggregate Score** at the top combines them into a single verdict-aligned metric.

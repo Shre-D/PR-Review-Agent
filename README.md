@@ -137,19 +137,21 @@ It reads only:
 It does **not** read the agent's chain of thought, prose reasoning, or stated
 confidence. This makes reward gaming via fluent reasoning impossible.
 
-Reward composition per episode:
+Reward composition per episode (all values are raw — no normalisation):
 
-- **Step reward**: `+0.05` base for any new tool call; `+0.08` bonus if the
-  tool covers one of the task's risk domains; `−2.55` for duplicates;
-  efficiency decay after a tier-aware step threshold.
-- **Terminal reward**: `+0.95` to `+1.20` for a correct verdict supported by
-  evidence; `−1.45` for a correct verdict with no supportive tool;
-  `−2.10` for a correct verdict submitted before the route's `min_tools`;
-  `−0.80` for escalating instead of rejecting; `−2.65` for a wrong verdict.
+- **Step reward**: `+0.1` base for any new tool call; `+0.2` bonus if the tool
+  covers one of the task's risk domains (total `+0.3`); `−0.4` for duplicates;
+  `−0.05` efficiency decay per step past a tier-aware threshold.
+- **Terminal reward**: `+1.0` to `+1.4` for a correct verdict supported by
+  evidence; `−0.3` for a correct verdict with no supportive tool; `+0.2` for a
+  correct verdict submitted before the route's `min_tools`; `−0.2`/`−0.4` for
+  escalating instead of rejecting; `−0.8`/`−1.0` for a wrong verdict.
 - **Evidence penalties**: `−0.40` for approving when critical findings exist;
   `−0.20` for rejecting when all evidence is clean.
-- **Normalisation**: raw reward in `[−2.83, +1.51]` is mapped to `[0.01, 0.99]`
-  for stable GRPO advantages.
+- **No normalisation**: raw rewards go directly to GRPO. Previous iterations
+  normalised into `[0.01, 0.99]`, which compressed the signal and caused mode
+  collapse. The current raw scale has a spread of ~2.5, giving GRPO clear
+  advantage signal.
 
 ## Current Baselines (78 tasks, heuristic backend)
 

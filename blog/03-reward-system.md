@@ -18,14 +18,17 @@ Every non-terminal tool call receives a step reward from
 
 The main rules are:
 
-- new tool call: small positive base reward
-- relevant tool for the task risk domain: extra bonus
-- duplicate tool call: penalty
-- too many steps for the task difficulty: efficiency penalty
+- new relevant tool call: `+0.3` raw reward
+- new irrelevant tool call: `+0.1` raw reward
+- duplicate tool call: `−0.4` penalty
+- too many steps for the task difficulty: `−0.05` per step past threshold
+
+The gap between relevant (`+0.3`) and irrelevant (`+0.1`) is `0.2` — large
+enough for GRPO to compute meaningful advantages across completions.
 
 Example: a security task such as `py_sql_injection` has `risk_domains` containing
-`security`, so `check_security` is relevant. A first call to `check_security`
-earns more than a first call to an unrelated tool.
+`security`, so `check_security` is relevant and earns `+0.3`. A first call to
+`check_config` would only earn `+0.1`.
 
 For clean tasks, the relevant baseline tool is `check_quality`. This prevents
 the model from learning that every PR must go through the security path.
@@ -56,18 +59,22 @@ The policy always chooses from:
 ## Terminal Reward
 
 Terminal reward is assigned when the model calls `submit_review` or `escalate`.
+These are raw values returned directly to GRPO:
 
-The key cases are:
+- correct verdict with supportive evidence: `+1.0` to `+1.4`
+- correct verdict, early submit (insufficient evidence): `+0.2`
+- correct verdict, no supportive tool: `−0.3`
+- escalation on risky tasks: `−0.2` to `−0.4`
+- wrong verdict: `−0.8` (with evidence) / `−1.0` (early)
 
-- correct verdict with supportive evidence: high reward
-- correct verdict without supportive evidence: partial reward
-- escalation on risky tasks: small partial credit
-- wrong verdict: penalty
+The gap between evidence-backed correct (`+1.0`) and early correct (`+0.2`) is
+`+0.8`. This is the most important signal: the model must learn that correct
+verdicts without evidence are worth far less than ones backed by tool calls.
 
-This distinction matters. The model should not learn to guess a verdict from the
-prompt alone. If the expected verdict is `reject`, and the model rejects only
-after gathering security evidence, that is better than rejecting without any
-tool call.
+The early-submit penalty (`+0.2`) is deliberately positive but low. Previous
+iterations used a severely negative penalty (`−2.55`) which made the model
+afraid to ever submit, causing mode collapse. The current value is reachable but
+clearly worse than gathering evidence first.
 
 ## Evidence Alignment
 
@@ -157,9 +164,15 @@ Why this scores poorly:
 GRPO compares multiple completions for the same prompt. The reward function
 creates useful contrast between completions:
 
-- security tool then reject beats unsupported reject
-- unsupported reject beats approving a critical vulnerability
-- one relevant tool beats three redundant tools
-- clean approval beats paranoid rejection on safe refactors
+- relevant tool call (`+0.3`) beats irrelevant tool call (`+0.1`)
+- evidence-backed correct submit (`+1.0`) beats early correct (`+0.2`)
+- early correct (`+0.2`) beats wrong verdict (`−0.8`)
+- duplicate calls (`−0.4`) are clearly worse than any novel tool
+
+Raw rewards go directly to GRPO without normalization. Previous iterations
+normalized rewards into `[0.01, 0.99]`, which compressed the signal so
+severely that GRPO could not distinguish between actions (reward variance
+collapsed to zero, causing mode collapse). The current raw scale has a total
+spread of ~2.5, giving GRPO clear advantage signal.
 
 That contrast is what teaches routing behavior.

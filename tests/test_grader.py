@@ -47,8 +47,11 @@ def test_aggregate_tool_scores_renormalizes_present_tools():
 
 def test_step_reward_no_bonus_for_duplicate_calls():
     task = _task()
-    assert step_reward(task, "check_security", already_called=True, step_count=2) < -2.0
-    assert step_reward(task, "check_security", already_called=False, step_count=1) > 0.0
+    dup = step_reward(task, "check_security", already_called=True, step_count=2)
+    novel = step_reward(task, "check_security", already_called=False, step_count=1)
+    assert dup == -0.4
+    assert novel > 0.0
+    assert novel - dup >= 0.4
 
 
 def test_terminal_reward_prefers_correct_verdict_with_evidence():
@@ -58,7 +61,7 @@ def test_terminal_reward_prefers_correct_verdict_with_evidence():
         "reject",
         {"check_security": {"score": 0.1}, "check_quality": {"score": 0.3}},
     )
-    assert reward > 0.9
+    assert reward >= 1.0
 
 
 def test_terminal_reward_penalizes_early_correct_submit():
@@ -69,8 +72,7 @@ def test_terminal_reward_penalizes_early_correct_submit():
         {"check_security": {"score": 0.1}},
         min_tools=2,
     )
-
-    assert reward < -2.4
+    assert reward == 0.2
 
 
 def test_terminal_reward_rewards_extra_supportive_evidence():
@@ -146,7 +148,7 @@ def test_terminal_reward_uses_verdict_evidence_alignment():
         {"check_security": {"score": 0.0}, "check_quality": {"score": 0.2}},
     )
 
-    assert reward == pytest.approx(1.18)
+    assert reward >= 1.0
 
 
 def test_evidence_penalties_catches_critical_approve():
@@ -164,4 +166,4 @@ def test_evidence_penalties_catches_critical_approve():
 def test_normalize_reward_clips_to_spec_range():
     assert normalize_reward(-100.0) == 0.01
     assert normalize_reward(100.0) == 0.99
-    assert reward_floor() == 0.01
+    assert reward_floor() == normalize_reward(-1.5)

@@ -109,20 +109,33 @@ The GRPO trainer receives `make_env_reward_func(...)`.
 The reward function:
 
 1. extracts the generated JSON action
-2. returns the positive reward floor for malformed output
+2. returns `RAW_FLOOR` (`−1.5`) for malformed output
 3. resets the environment to the task
 4. replays prior state actions
 5. applies the generated action
-6. returns the environment reward
+6. returns the **raw** environment reward
+
+Raw rewards go directly to GRPO — no normalization. This is critical. An
+earlier version normalized rewards into `[0.01, 0.99]`, which compressed the
+gap between a relevant tool (`0.3`) and an irrelevant tool (`0.1`) down to
+~0.018. GRPO could not compute meaningful advantages from that, and reward
+variance collapsed to zero.
+
+The current raw scale has clear gaps:
+
+| Outcome | Raw Reward |
+|---|---|
+| Evidence-backed correct submit | `+1.0` to `+1.4` |
+| Novel relevant tool | `+0.3` |
+| Novel irrelevant tool | `+0.1` |
+| Early correct submit | `+0.2` |
+| Duplicate tool | `−0.4` |
+| Wrong verdict | `−0.8` to `−1.0` |
+| Malformed/error | `−1.5` |
 
 This means the model is trained against the same reward code used by baseline
-and trained-model evaluation.
-
-The important ordering is now explicit: an initial evidence tool beats an
-unsupported direct submit, an evidence-backed correct submit beats an
-unsupported correct submit, and duplicate or malformed actions land near the
-floor. This is what makes GRPO optimize tool-use behavior instead of verdict
-guessing.
+and trained-model evaluation. The ordering is explicit and the gaps are wide
+enough for GRPO to optimize tool-use behavior instead of verdict guessing.
 
 ## HF Jobs Path
 

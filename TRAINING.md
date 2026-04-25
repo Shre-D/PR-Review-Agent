@@ -21,10 +21,11 @@ Current baseline artifact: `rewards/baseline_eval.json`
 | Heuristic | 78 | 0.590 | 2.514 |
 | Trained SLM | pending | pending | pending |
 
-The reward scale is now strictly positive at the exposed training/evaluation
-boundary. Baseline artifacts also include duplicate tool rate, invalid action
-rate, early submit rate, evidence-backed verdict rate, mean steps by route tier,
-and context-dependent task results.
+The environment returns **raw** rewards directly (no normalisation). GRPO sees
+the full reward spread (~2.5 between best and worst outcomes). Baseline artifacts
+also include duplicate tool rate, invalid action rate, early submit rate,
+evidence-backed verdict rate, mean steps by route tier, and context-dependent
+task results.
 
 ## Local Smoke Checks
 
@@ -195,8 +196,8 @@ logged step). Columns:
 | `step` | global step |
 | `loss` | TRL GRPO loss |
 | `reward_mean`, `reward_std`, `kl` | TRL-side aggregates |
-| `raw_reward_mean` | env-side raw reward in `[-2.83, +1.51]` (pre-normalization) |
-| `normalized_reward_mean` | env-side normalized reward in `[0.01, 0.99]` |
+| `raw_reward_mean` | env-side raw reward in `[-1.5, +1.5]` (used directly by GRPO) |
+| `normalized_reward_mean` | display-only normalized reward in `[0.01, 0.99]` |
 | `terminal_rate` | fraction of completions that emitted `submit_review`/`escalate` |
 | `terminal_accuracy` | of terminal completions, fraction with the correct verdict |
 | `parse_failure_rate` | fraction of completions whose JSON could not be parsed |
