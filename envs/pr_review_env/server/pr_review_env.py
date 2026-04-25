@@ -19,6 +19,10 @@ from .grader import outcome_summary, step_reward, terminal_reward
 from .tasks import PRTask, get_random_task, get_task_by_id
 from .tools import TOOL_NAMES, TOOL_REGISTRY, mcp
 
+# Hard cap on inference-time steps; prevents runaway loops when confidence gate
+# keeps redirecting low-confidence submits.
+_MAX_INFERENCE_STEPS = 8
+
 
 class PRReviewEnv(MCPEnvironment):
     """Multi-language PR review routing environment."""
@@ -29,6 +33,7 @@ class PRReviewEnv(MCPEnvironment):
         seed: int | None = None,
         review_config: ReviewConfig | dict[str, Any] | None = None,
         review_config_path: str | None = None,
+        inference_mode: bool = False,
     ):
         super().__init__(mcp_server=mcp)
         self._tool_registry = TOOL_REGISTRY
@@ -37,6 +42,7 @@ class PRReviewEnv(MCPEnvironment):
         self._task: PRTask | None = None
         self._state = PRReviewState()
         self._done = False
+        self._inference_mode = inference_mode
         loaded_config = load_review_config(review_config_path) if review_config_path else review_config
         self._review_config = (
             loaded_config
@@ -129,6 +135,36 @@ class PRReviewEnv(MCPEnvironment):
             step_count=self._state.step_count,
             config=self._review_config,
         )
+
+        # Inference-only confidence gate: if the model submits with low confidence
+        # and we haven't hit the step cap, redirect it to gather more evidence.
+        if (
+            self._inference_mode
+            and action.tool_name == "submit_review"
+            and self._state.step_count < _MAX_INFERENCE_STEPS
+        ):
+            conf_value = result_payload.get("confidence") or 0.0
+            threshold = (
+                self._review_config.escalation_confidence_threshold
+                if self._review_config
+                else 0.6
+            )
+            if conf_value < threshold:
+                self._state.review_history.append(
+                    f"submit_review redirected: confidence={conf_value:.2f} < {threshold:.2f}, gather more evidence"
+                )
+                reward = round(reward - 0.10, 3)
+                self._state.cumulative_reward = round(self._state.cumulative_reward + reward, 3)
+                return self._observation(
+                    reward=reward,
+                    last_tool_name="submit_review",
+                    last_tool_result={
+                        "status": "low_confidence",
+                        "confidence": conf_value,
+                        "threshold": threshold,
+                        "message": "Confidence below threshold — gather more evidence before submitting.",
+                    },
+                )
 
         final_verdict = None
         if action.tool_name in {"submit_review", "escalate"}:
