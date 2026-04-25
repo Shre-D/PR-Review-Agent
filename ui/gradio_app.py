@@ -6,6 +6,7 @@ import difflib
 import json
 import os
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,11 @@ import gradio as gr
 
 from benchmarks.run_baselines import decide_final_verdict, heuristic_policy
 from envs.pr_review_env.models import PRReviewAction, PRReviewObservation
-from envs.pr_review_env.server.grader import aggregate_tool_scores, relevant_tools
+from envs.pr_review_env.server.grader import (
+    aggregate_tool_scores,
+    get_scoring_logic,
+    relevant_tools,
+)
 from envs.pr_review_env.server.pr_review_env import PRReviewEnv
 from envs.pr_review_env.server.tasks import PRTask, load_tasks, task_review_config
 from envs.pr_review_env.server.tools import (
@@ -32,15 +37,34 @@ from envs.pr_review_env.server.tools import (
 )
 from inference import run_ollama_step
 from train.adaptive_router import prompt_route_context
-from train.grpo_train import _action_with_state_args, training_prompt
+from train.grpo_train import SYSTEM_PROMPT, _action_with_state_args, build_obs_prompt, parse_action, training_prompt
 
 
 BLOG_DIR = ROOT / "blog"
 BANKS = ["all", "seed", "comprehensive"]
 LOADER_MODES = ["short", "empty", "full", "off"]
+
+# Policy choices. Format:
+#   "heuristic"                                  — deterministic baseline
+#   "ollama:<tag>"                               — local Ollama LLM
+#   "slm:<checkpoint_path>"                      — trained LoRA checkpoint on disk
+#   "slm:<hf-user/repo>"                         — trained LoRA from HF Hub
+DEFAULT_TRAINED_CKPT = os.getenv("PR_REVIEW_TRAINED_CKPT", "")
 POLICIES = ["heuristic", "ollama:qwen2.5:7b"]
+if DEFAULT_TRAINED_CKPT:
+    POLICIES.append(f"slm:{DEFAULT_TRAINED_CKPT}")
 DEFAULT_POLICY = os.getenv("PR_REVIEW_UI_POLICY", "heuristic")
 MAX_AGENT_STEPS = 8
+
+# Per-1k-token cost estimates for the cost-comparison panel (USD, Apr 2026).
+# Local Qwen3-1.7B on CPU ~ amortised electricity cost; treated as ~$0.0001/review.
+COST_PER_1K_TOKENS = {
+    "slm-qwen3-1p7b-local": 0.00001,
+    "gpt-4o-mini":          0.00015,
+    "claude-haiku-4-5":     0.0008,
+    "claude-sonnet-4-5":    0.003,
+    "gpt-4o":               0.005,
+}
 
 TOOL_FUNCS = {
     "check_security": check_security,
@@ -172,6 +196,23 @@ def _task_card(task: PRTask, obs_risk: str | None, obs_critical: list[str] | Non
     return "\n".join(lines)
 
 
+def scoring_guide_md() -> str:
+    logic = get_scoring_logic()
+    tp = logic["tool_penalties"]
+    return f"""
+### 📊 Understanding the Scores
+
+| Metric | What it measures | Calculation |
+| :--- | :--- | :--- |
+| **Tool Score** | Severity of findings in a single tool call. | Starts at `1.0`. Subtracts penalty per finding (e.g., security=`-{tp['check_security']}`, tests=`-{tp['check_tests']}`). |
+| **Aggregate Score** | Overall "health" of the PR across all tools. | Weighted average of Tool Scores. Relevant tools are weighted **{logic['relevant_weight_multiplier']}x**. |
+| **Reward** | The RL signal for the agent's performance. | `Base(0.05) + Relevance Bonus(0.08) - Efficiency Penalties`. Terminal correct = `~{logic['terminal_correct_base']}`. |
+
+**Why did the score change?**
+Tool scores are **not cumulative**. If `check_security` finds an issue (0.1) but `check_quality` is clean (1.0), the table shows both. The **Aggregate Score** at the top combines them into a single verdict-aligned metric.
+"""
+
+
 def task_overview(task_bank: str, task_id: str, loader_mode: str) -> tuple[str, str, str, str, str, str]:
     task = _task(task_bank, task_id)
     config = task_review_config(task, mode=loader_mode)
@@ -193,12 +234,21 @@ def _verdict_card(expected: str, predicted: str, episode_return: float, tools_ca
     exp_label = VERDICT_LABEL.get(expected, expected)
     tools = ", ".join(f"`{t}`" for t in tools_called) if tools_called else "none"
     score_str = f"{agg_score:.3f}" if isinstance(agg_score, float) else str(agg_score or "N/A")
+    
+    explanation = (
+        "**Aggregate Score** is the weighted average of all Tool Scores. "
+        "Closer to 1.0 means the PR is 'cleaner'; closer to 0.0 means critical issues were found."
+    )
+    
     return "\n".join([
         f"## Result: {status}",
-        f"**Predicted:** {pred_label}",
-        f"**Expected:** {exp_label}",
-        f"**Episode return:** `{episode_return}`  |  **Aggregate score:** `{score_str}`",
-        f"**Tools run:** {tools}",
+        f"**Predicted Verdict:** {pred_label}",
+        f"**Expected Verdict:** {exp_label}",
+        f"**Total Episode Reward:** `{episode_return}`",
+        f"**Final Aggregate Score:** `{score_str}`",
+        f"**Tools used for evidence:** {tools}",
+        "",
+        f"> {explanation}"
     ])
 
 
@@ -212,30 +262,31 @@ def _trace_markdown(trace: list[dict[str, Any]]) -> str:
         mode = result.get("analysis_mode", "")
         reward = item.get("reward")
 
-        header_parts = [f"**{index}. `{action}`**"]
+        header_parts = [f"### {index}. `{action}`"]
         if score != "":
-            header_parts.append(f"score: `{score}`")
-        if mode:
-            header_parts.append(f"mode: `{mode}`")
+            header_parts.append(f"Severity Score: `{score}`")
         if reward is not None:
-            header_parts.append(f"reward: `{reward}`")
+            header_parts.append(f"Reward: `{reward}`")
 
         if action in {"submit_review", "escalate"}:
             verdict = result.get("verdict") or item["action"].get("arguments", {}).get("verdict", "")
             confidence = result.get("confidence") or item["action"].get("arguments", {}).get("confidence")
             reasoning = result.get("reasoning") or item["action"].get("arguments", {}).get("reasoning", "")
-            lines = [f"- **Verdict:** `{verdict}`"]
-            if confidence is not None:
-                lines.append(f"- **Confidence:** `{confidence}`")
-            if reasoning:
-                lines.append(f"- **Reasoning:** {reasoning}")
-            rendered = "\n".join(lines)
+            
+            lines = [
+                f"## 🏁 Final Submission",
+                f"- **Verdict:** **{verdict.upper()}**",
+                f"- **Confidence:** `{confidence}`" if confidence is not None else "",
+                f"### Reasoning:",
+                f"> {reasoning}" if reasoning else "_No reasoning provided._"
+            ]
+            rendered = "\n".join(filter(None, lines))
         elif findings:
             rendered = "\n".join(f"- {f}" for f in findings)
         else:
-            rendered = "_No findings_"
+            rendered = "_No findings (Tool reported clean result)_"
 
-        sections.append("  ".join(header_parts) + "\n\n" + rendered)
+        sections.append(" | ".join(header_parts) + "\n\n" + rendered)
     return "\n\n---\n\n".join(sections)
 
 
@@ -619,11 +670,14 @@ def build_app() -> gr.Blocks:
 
                 run_btn = gr.Button("Run review (policy above)", variant="primary", size="lg")
 
+                with gr.Accordion("📚 Scoring & Reward Guide", open=False):
+                    gr.Markdown(scoring_guide_md())
+
                 verdict_card = gr.Markdown(label="Review result")
 
                 with gr.Row():
                     trace_table = gr.Dataframe(
-                        headers=["Step", "Tool", "Reward", "Score", "Mode", "Findings"],
+                        headers=["Step", "Tool", "Reward", "Tool Score (Severity)", "Mode", "Findings"],
                         label="Tool results",
                         interactive=False,
                         wrap=True,
@@ -709,11 +763,14 @@ def build_app() -> gr.Blocks:
 
                 analyze_btn = gr.Button("Analyze this change", variant="primary", size="lg")
 
+                with gr.Accordion("📚 Scoring & Reward Guide", open=False):
+                    gr.Markdown(scoring_guide_md())
+
                 custom_verdict = gr.Markdown(label="Review result")
 
                 with gr.Row():
                     custom_trace_table = gr.Dataframe(
-                        headers=["Step", "Tool", "Score", "Mode", "Findings"],
+                        headers=["Step", "Tool", "Tool Score (Severity)", "Mode", "Findings"],
                         label="Tool results",
                         interactive=False,
                         wrap=True,

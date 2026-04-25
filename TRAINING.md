@@ -17,8 +17,8 @@ Current baseline artifact: `rewards/baseline_eval.json`
 
 | Policy | Episodes | Accuracy | Mean Return |
 |---|---:|---:|---:|
-| Random | 78 | 0.449 | 0.821 |
-| Heuristic | 78 | 0.590 | 2.505 |
+| Random | 78 | 0.449 | 0.774 |
+| Heuristic | 78 | 0.590 | 2.514 |
 | Trained SLM | pending | pending | pending |
 
 The reward scale is now strictly positive at the exposed training/evaluation
@@ -184,6 +184,35 @@ python benchmarks/generate_report.py \
 - HPC path has Python 3.11, CUDA-visible PyTorch, and Qwen weights cached.
 - Trained checkpoints are not committed; keep them in `grpo_checkpoint/`,
   scratch storage, or the configured Hugging Face model repo.
+
+## Training Log Columns
+
+`<output_dir>/training_log.csv` is written by `RewardLogCallback` (one row per
+logged step). Columns:
+
+| Column | Meaning |
+|---|---|
+| `step` | global step |
+| `loss` | TRL GRPO loss |
+| `reward_mean`, `reward_std`, `kl` | TRL-side aggregates |
+| `raw_reward_mean` | env-side raw reward in `[-2.83, +1.51]` (pre-normalization) |
+| `normalized_reward_mean` | env-side normalized reward in `[0.01, 0.99]` |
+| `terminal_rate` | fraction of completions that emitted `submit_review`/`escalate` |
+| `terminal_accuracy` | of terminal completions, fraction with the correct verdict |
+| `parse_failure_rate` | fraction of completions whose JSON could not be parsed |
+| `env_error_rate` | fraction whose replay/step raised |
+| `n_completions` | window size for these means |
+| `tool_frac/<tool>` | fraction of completions that picked this tool (one column per tool) |
+| `tool_count/<tool>` | absolute count this window |
+
+When `--report-to wandb` is set, the same env-side metrics are also logged to
+W&B under the `env/` namespace (`env/raw_reward_mean`, `env/terminal_accuracy`,
+`env/tool_frac/check_security`, etc.) so a single W&B dashboard captures both
+TRL-side and PR-review-side training signal.
+
+`benchmarks/generate_report.py` reads these columns to render two extra
+panels: per-tool stacked area mix over training, and terminal-accuracy +
+parse-failure-rate curves.
 
 ## Common Failures
 

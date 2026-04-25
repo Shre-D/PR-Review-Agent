@@ -1,16 +1,24 @@
-# Introduction: Code Review as Tool Routing
+# Introduction: SLM-as-Router for Code Review
 
-Most automated code review systems try to answer the whole review in one shot:
-read the diff, write comments, maybe suggest a verdict. This project takes a
-different position: review quality depends less on fluent prose and more on
-choosing the right evidence.
+Every shipped PR-review tool today — CodeRabbit, Greptile, Cursor Bugbot,
+GitHub Copilot review — follows the same pattern: feed the diff to a frontier
+LLM and ask for prose. Findings are guesses, cost scales with PR volume, and
+the reviewer is not trainable to a specific repo's policies.
 
-The PR Review Router is an OpenEnv-compatible benchmark where a small policy
-model learns to route a pull request through review tools before it submits a
-final verdict.
+This project takes the opposite stance. **Compilers and static analysers don't
+hallucinate.** `semgrep`, `ruff`, `tsc`, `javac`, `go vet`, and `cargo check`
+produce evidence that is correct by construction. The interesting question is
+not "what does the diff mean?" but "which analyser should run, given this
+diff?". That is a routing decision, and routing decisions don't need a
+frontier-scale model.
+
+The PR Review Router is an OpenEnv-compatible benchmark where a 1.7B policy
+model (`Qwen/Qwen3-1.7B`) learns to route a pull request through review tools
+before it submits a final verdict. To our knowledge it is the first open RL
+environment for SLM-based tool routing in code review.
 
 The model does not need to be a general-purpose senior engineer. It needs to
-learn questions like:
+learn evidence-routing questions like:
 
 - Is this a security-sensitive change?
 - Is the risky file a Dockerfile, workflow, or `.gitignore` rather than source
@@ -23,6 +31,22 @@ The trained policy target is `Qwen/Qwen3-1.7B`, fine-tuned with GRPO and LoRA.
 The router is intentionally small. Larger models may be used by developers
 while building the project, but they are not part of training, reward
 calculation, routing, or evaluation.
+
+## Why a Small Model Is the Right Choice Here
+
+Three structural reasons:
+
+1. **Cost.** Frontier review of a medium PR is $0.10–$0.50. A 4-bit Qwen3-1.7B
+   on a single T4 runs ~50 tok/s, costing ~$0.0001 per review. For repos doing
+   1k+ PRs/month, the routing-with-SLM approach is two to three orders of
+   magnitude cheaper.
+2. **Correctness.** Tool outputs come from compilers and static analysers, not
+   from another LLM judge. There is no hallucination layer between the agent
+   and ground truth.
+3. **Trainability.** Because tool outputs and expected verdicts are
+   deterministic, the GRPO reward signal is clean and reproducible. A small
+   model is enough to learn the routing decision; a large model is not needed
+   to "know everything" because the analyser does the knowing.
 
 ## What the Environment Does
 
@@ -96,8 +120,8 @@ Current baselines on all 78 tasks:
 
 | Policy | Episodes | Accuracy | Mean Return |
 |---|---:|---:|---:|
-| Random | 78 | 0.449 | 0.821 |
-| Heuristic | 78 | 0.590 | 2.505 |
+| Random | 78 | 0.449 | 0.774 |
+| Heuristic | 78 | 0.590 | 2.514 |
 | Trained SLM | pending | pending | pending |
 
 The final phase is training the LoRA adapter and evaluating it against the same

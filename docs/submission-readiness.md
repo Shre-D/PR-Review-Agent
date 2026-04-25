@@ -20,8 +20,8 @@
 
 | Policy | Episodes | Accuracy | Mean Return |
 |---|---:|---:|---:|
-| Random | 78 | 0.449 | 0.821 |
-| Heuristic | 78 | 0.590 | 2.505 |
+| Random | 78 | 0.449 | 0.774 |
+| Heuristic | 78 | 0.590 | 2.514 |
 
 ## Training Gate
 

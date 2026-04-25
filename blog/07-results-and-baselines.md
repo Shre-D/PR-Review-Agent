@@ -23,8 +23,8 @@ python benchmarks/evaluate_baselines.py \
 
 | Policy | Episodes | Accuracy | Mean Return |
 |---|---:|---:|---:|
-| Random | 78 | 0.346 | -0.042 |
-| Heuristic | 78 | 0.577 | 0.621 |
+| Random | 78 | 0.449 | 0.774 |
+| Heuristic | 78 | 0.590 | 2.514 |
 | Trained SLM | pending | pending | pending |
 
 ## What the Baselines Mean
