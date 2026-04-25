@@ -14,6 +14,7 @@ import argparse
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from huggingface_hub import HfApi
@@ -49,8 +50,7 @@ def main() -> None:
         shutil.rmtree(repo_dir)
 
     run(["git", "clone", "--depth", "1", "--branch", args.repo_ref, args.repo_url, str(repo_dir)])
-    run(["python", "-m", "pip", "install", "--upgrade", "pip"])
-    run(["python", "-m", "pip", "install", "-e", ".[server,train,dev]", "matplotlib", "pandas"], cwd=repo_dir)
+    run(["uv", "pip", "install", "--python", sys.executable, "-e", ".[server,train,dev]", "matplotlib", "pandas"], cwd=repo_dir)
     run(["python", "tasks/build_task_bank.py", "--print-summary"], cwd=repo_dir)
 
     env = {**os.environ, "PR_REVIEW_TOOL_BACKEND": "heuristic"}
