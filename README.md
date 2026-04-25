@@ -1,3 +1,14 @@
+---
+title: PR Review Router
+emoji: 🔎
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+license: bsd-3-clause
+---
+
 # PR Review Router — SLM-as-Router for Code Review
 
 > **Thesis.** Frontier LLMs review pull requests by guessing. We replace the LLM
@@ -54,7 +65,7 @@ performance on routing-shaped tasks.** This env is the testbed.
 
 ## Hackathon Materials
 
-- **Hugging Face Space**: _coming after onsite training_ — `https://huggingface.co/spaces/<user>/pr-review-env`
+- **Hugging Face Space**: [`shred12/pr-review-env`](https://huggingface.co/spaces/shred12/pr-review-env)
 - **Trained model**: _coming after onsite training_ — `https://huggingface.co/<user>/pr-review-qwen3-1p7b`
 - **Mini-blog**: see [`blog/`](blog/) — 7 posts covering motivation, architecture,
   reward design, RL loop, tasks, tools, and results.
