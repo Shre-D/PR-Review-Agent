@@ -3,6 +3,7 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PR_REVIEW_TOOL_BACKEND=heuristic \
+    PYTHONPATH=/app \
     PORT=7860
 
 WORKDIR /app
@@ -22,7 +23,7 @@ COPY train/ /app/train/
 COPY ui/ /app/ui/
 
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -e ".[server]"
+    && pip install --no-cache-dir fastapi uvicorn httpx pydantic pyyaml
 
 EXPOSE 7860
 
