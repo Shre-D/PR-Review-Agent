@@ -2,100 +2,100 @@
   "heuristic": {
     "policy": "heuristic",
     "episodes": 78,
-    "accuracy": 0.577,
-    "mean_episode_return": 0.621,
+    "accuracy": 0.59,
+    "mean_episode_return": 2.514,
     "by_language": {
       "go": {
         "episodes": 12,
-        "accuracy": 0.5,
-        "mean_episode_return": 0.203
+        "accuracy": 0.333,
+        "mean_episode_return": 1.675
       },
       "java": {
         "episodes": 9,
-        "accuracy": 0.444,
-        "mean_episode_return": 0.496
+        "accuracy": 0.778,
+        "mean_episode_return": 3.358
       },
       "javascript": {
         "episodes": 2,
         "accuracy": 0.0,
-        "mean_episode_return": -0.272
+        "mean_episode_return": 2.06
       },
       "python": {
         "episodes": 22,
-        "accuracy": 0.545,
-        "mean_episode_return": 0.658
+        "accuracy": 0.5,
+        "mean_episode_return": 2.62
       },
       "rust": {
         "episodes": 10,
-        "accuracy": 0.5,
-        "mean_episode_return": 0.55
+        "accuracy": 0.7,
+        "mean_episode_return": 2.693
       },
       "typescript": {
         "episodes": 9,
-        "accuracy": 0.444,
-        "mean_episode_return": 0.49
+        "accuracy": 0.556,
+        "mean_episode_return": 2.873
       },
       "yaml": {
         "episodes": 14,
-        "accuracy": 1.0,
-        "mean_episode_return": 1.262
+        "accuracy": 0.857,
+        "mean_episode_return": 2.229
       }
     },
     "by_file_type": {
       "build_manifest": {
         "episodes": 6,
         "accuracy": 0.333,
-        "mean_episode_return": 0.258
+        "mean_episode_return": 2.982
       },
       "dockerfile": {
         "episodes": 7,
-        "accuracy": 0.571,
-        "mean_episode_return": 0.718
+        "accuracy": 0.143,
+        "mean_episode_return": 2.196
       },
       "github_actions": {
         "episodes": 10,
-        "accuracy": 0.9,
-        "mean_episode_return": 1.306
+        "accuracy": 0.6,
+        "mean_episode_return": 3.08
       },
       "gitignore": {
         "episodes": 5,
-        "accuracy": 1.0,
-        "mean_episode_return": 1.045
+        "accuracy": 0.8,
+        "mean_episode_return": 2.097
       },
       "go": {
         "episodes": 12,
-        "accuracy": 0.5,
-        "mean_episode_return": 0.203
+        "accuracy": 0.333,
+        "mean_episode_return": 1.675
       },
       "java": {
         "episodes": 9,
-        "accuracy": 0.444,
-        "mean_episode_return": 0.496
+        "accuracy": 0.778,
+        "mean_episode_return": 3.358
       },
       "javascript": {
         "episodes": 2,
         "accuracy": 0.0,
-        "mean_episode_return": -0.272
+        "mean_episode_return": 2.06
       },
       "python": {
         "episodes": 19,
-        "accuracy": 0.474,
-        "mean_episode_return": 0.538
+        "accuracy": 0.526,
+        "mean_episode_return": 2.628
       },
       "rust": {
         "episodes": 10,
-        "accuracy": 0.5,
-        "mean_episode_return": 0.55
+        "accuracy": 0.7,
+        "mean_episode_return": 2.693
       },
       "typescript": {
         "episodes": 9,
-        "accuracy": 0.444,
-        "mean_episode_return": 0.49
+        "accuracy": 0.556,
+        "mean_episode_return": 2.873
       },
       "yaml": {
         "episodes": 16,
-        "accuracy": 0.938,
-        "mean_episode_return": 1.333
+        "accuracy": 0.625,
+        "mean_episode_return": 2.742
       }
     },
     "examples": [
@@ -107,7 +107,7 @@
         ],
         "expected_verdict": "reject",
         "predicted_verdict": "reject",
-        "episode_return": 1.348,
+        "episode_return": 2.879,
         "tools_called": [
           "check_security",
           "check_quality",
@@ -123,7 +123,7 @@
         ],
         "expected_verdict": "reject",
         "predicted_verdict": "reject",
-        "episode_return": 1.348,
+        "episode_return": 2.879,
         "tools_called": [
           "check_security",
           "check_quality",
@@ -138,8 +138,8 @@
           "go"
         ],
         "expected_verdict": "approve",
-        "predicted_verdict": "approve",
-        "episode_return": 0.45,
+        "predicted_verdict": "request_changes",
+        "episode_return": 1.371,
         "tools_called": [
           "check_security",
           "check_build_and_types",
@@ -153,8 +153,8 @@
           "rust"
         ],
         "expected_verdict": "request_changes",
-        "predicted_verdict": "approve",
-        "episode_return": -0.35,
+        "predicted_verdict": "request_changes",
+        "episode_return": 2.862,
         "tools_called": [
           "check_security",
           "check_quality",
@@ -169,8 +169,8 @@
           "dockerfile"
         ],
         "expected_verdict": "request_changes",
-        "predicted_verdict": "request_changes",
-        "episode_return": 1.399,
+        "predicted_verdict": "reject",
+        "episode_return": 2.084,
         "tools_called": [
           "check_security",
           "check_config",
@@ -187,7 +187,7 @@
         ],
         "expected_verdict": "request_changes",
         "predicted_verdict": "request_changes",
-        "episode_return": 1.461,
+        "episode_return": 2.905,
         "tools_called": [
           "check_security",
           "check_config",
@@ -203,7 +203,7 @@
         ],
         "expected_verdict": "request_changes",
         "predicted_verdict": "request_changes",
-        "episode_return": 1.423,
+        "episode_return": 2.245,
         "tools_called": [
           "check_security",
           "check_config",
@@ -219,8 +219,8 @@
           "github_actions"
         ],
         "expected_verdict": "approve",
-        "predicted_verdict": "approve",
-        "episode_return": 1.352,
+        "predicted_verdict": "request_changes",
+        "episode_return": 3.341,
         "tools_called": [
           "check_security",
           "check_config",
@@ -230,105 +230,122 @@
           "submit_review"
         ]
       }
-    ]
+    ],
+    "duplicate_tool_rate": 0.0,
+    "invalid_action_rate": 0.0,
+    "early_submit_rate": 0.09,
+    "over_budget_rate": 0.0,
+    "evidence_backed_verdict_rate": 0.897,
+    "mean_steps_by_tier": {
+      "large": 4.5,
+      "medium": 4.577,
+      "small": 3.729
+    },
+    "mean_tool_calls": 3.051,
+    "mean_unique_tool_calls": 3.051,
+    "context_dependent": {
+      "episodes": 7,
+      "accuracy": 0.571,
+      "mean_episode_return": 2.433
+    }
   },
   "random": {
     "policy": "random",
     "episodes": 78,
-    "accuracy": 0.346,
-    "mean_episode_return": -0.042,
+    "accuracy": 0.449,
+    "mean_episode_return": 0.774,
     "by_language": {
       "go": {
         "episodes": 12,
-        "accuracy": 0.5,
-        "mean_episode_return": 0.105
+        "accuracy": 0.417,
+        "mean_episode_return": 0.767
       },
       "java": {
         "episodes": 9,
-        "accuracy": 0.111,
-        "mean_episode_return": -0.368
+        "accuracy": 0.444,
+        "mean_episode_return": 0.773
       },
       "javascript": {
         "episodes": 2,
         "accuracy": 0.0,
-        "mean_episode_return": -0.5
+        "mean_episode_return": 0.711
       },
       "python": {
         "episodes": 22,
         "accuracy": 0.273,
-        "mean_episode_return": -0.151
+        "mean_episode_return": 0.752
       },
       "rust": {
         "episodes": 10,
-        "accuracy": 0.4,
-        "mean_episode_return": 0.066
+        "accuracy": 0.5,
+        "mean_episode_return": 0.783
       },
       "typescript": {
         "episodes": 9,
-        "accuracy": 0.556,
-        "mean_episode_return": 0.232
+        "accuracy": 0.667,
+        "mean_episode_return": 0.806
       },
       "yaml": {
         "episodes": 14,
-        "accuracy": 0.357,
-        "mean_episode_return": 0.022
+        "accuracy": 0.643,
+        "mean_episode_return": 0.797
       }
     },
     "by_file_type": {
       "build_manifest": {
         "episodes": 6,
-        "accuracy": 0.5,
-        "mean_episode_return": 0.119
+        "accuracy": 0.667,
+        "mean_episode_return": 0.802
       },
       "dockerfile": {
         "episodes": 7,
-        "accuracy": 0.0,
-        "mean_episode_return": -0.482
+        "accuracy": 0.143,
+        "mean_episode_return": 0.733
       },
       "github_actions": {
         "episodes": 10,
-        "accuracy": 0.4,
-        "mean_episode_return": -0.039
+        "accuracy": 0.7,
+        "mean_episode_return": 0.803
       },
       "gitignore": {
         "episodes": 5,
-        "accuracy": 0.8,
-        "mean_episode_return": 0.601
+        "accuracy": 0.6,
+        "mean_episode_return": 0.8
       },
       "go": {
         "episodes": 12,
-        "accuracy": 0.5,
-        "mean_episode_return": 0.105
+        "accuracy": 0.417,
+        "mean_episode_return": 0.767
       },
       "java": {
         "episodes": 9,
-        "accuracy": 0.111,
-        "mean_episode_return": -0.368
+        "accuracy": 0.444,
+        "mean_episode_return": 0.773
       },
       "javascript": {
         "episodes": 2,
         "accuracy": 0.0,
-        "mean_episode_return": -0.5
+        "mean_episode_return": 0.711
       },
       "python": {
         "episodes": 19,
         "accuracy": 0.316,
-        "mean_episode_return": -0.095
+        "mean_episode_return": 0.758
       },
       "rust": {
         "episodes": 10,
-        "accuracy": 0.4,
-        "mean_episode_return": 0.066
+        "accuracy": 0.5,
+        "mean_episode_return": 0.783
       },
       "typescript": {
         "episodes": 9,
-        "accuracy": 0.556,
-        "mean_episode_return": 0.232
+        "accuracy": 0.667,
+        "mean_episode_return": 0.806
       },
       "yaml": {
         "episodes": 16,
-        "accuracy": 0.5,
-        "mean_episode_return": 0.126
+        "accuracy": 0.625,
+        "mean_episode_return": 0.794
       }
     },
     "examples": [
@@ -340,7 +357,7 @@
         ],
         "expected_verdict": "reject",
         "predicted_verdict": "approve",
-        "episode_return": -0.5,
+        "episode_return": 0.711,
         "tools_called": [
           "check_build_and_types",
           "submit_review"
@@ -354,7 +371,7 @@
         ],
         "expected_verdict": "reject",
         "predicted_verdict": "reject",
-        "episode_return": 1.345,
+        "episode_return": 0.864,
         "tools_called": [
           "check_security",
           "submit_review"
@@ -367,8 +384,8 @@
           "go"
         ],
         "expected_verdict": "approve",
-        "predicted_verdict": "approve",
-        "episode_return": 0.4,
+        "predicted_verdict": "request_changes",
+        "episode_return": 0.711,
         "tools_called": [
           "check_build_and_types",
           "submit_review"
@@ -382,7 +399,7 @@
         ],
         "expected_verdict": "request_changes",
         "predicted_verdict": "approve",
-        "episode_return": -0.5,
+        "episode_return": 0.711,
         "tools_called": [
           "check_config",
           "submit_review"
@@ -396,7 +413,7 @@
         ],
         "expected_verdict": "request_changes",
         "predicted_verdict": "approve",
-        "episode_return": -0.5,
+        "episode_return": 0.711,
         "tools_called": [
           "check_build_and_types",
           "submit_review"
@@ -410,8 +427,8 @@
           "github_actions"
         ],
         "expected_verdict": "request_changes",
-        "predicted_verdict": "approve",
-        "episode_return": -0.5,
+        "predicted_verdict": "request_changes",
+        "episode_return": 0.835,
         "tools_called": [
           "check_build_and_types",
           "submit_review"
@@ -425,7 +442,7 @@
         ],
         "expected_verdict": "request_changes",
         "predicted_verdict": "request_changes",
-        "episode_return": 1.299,
+        "episode_return": 0.859,
         "tools_called": [
           "check_config",
           "submit_review"
@@ -441,12 +458,29 @@
         ],
         "expected_verdict": "approve",
         "predicted_verdict": "approve",
-        "episode_return": 0.4,
+        "episode_return": 0.835,
         "tools_called": [
           "check_build_and_types",
           "submit_review"
         ]
       }
-    ]
+    ],
+    "duplicate_tool_rate": 0.0,
+    "invalid_action_rate": 0.0,
+    "early_submit_rate": 1.0,
+    "over_budget_rate": 0.0,
+    "evidence_backed_verdict_rate": 0.346,
+    "mean_steps_by_tier": {
+      "large": 2.0,
+      "medium": 2.0,
+      "small": 2.0
+    },
+    "mean_tool_calls": 1.0,
+    "mean_unique_tool_calls": 1.0,
+    "context_dependent": {
+      "episodes": 7,
+      "accuracy": 0.143,
+      "mean_episode_return": 0.739
+    }
   }
 }
