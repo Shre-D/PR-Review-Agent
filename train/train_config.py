@@ -1,8 +1,8 @@
 """Hardware-aware training configuration for the PR Review GRPO agent.
 
 Select a preset with:
-    cfg = TrainingConfig.for_t4()      # Colab free / T4 16GB
-    cfg = TrainingConfig.for_a100()    # Colab Pro+ / Kaggle / rented GPU
+    cfg = TrainingConfig.for_t4()      # T4 16GB smoke/low-cost runs
+    cfg = TrainingConfig.for_a100()    # HF Jobs A100 / rented GPU
     cfg = TrainingConfig.for_cpu()     # smoke-test only, no real training
 
 All presets use QLoRA so the 1.7B model fits in any modern GPU.
@@ -44,14 +44,15 @@ class TrainingConfig:
     warmup_ratio: float = 0.05
     lr_scheduler_type: str = "cosine"
 
-    # Rollout performance
-    max_parallel_rollouts: int = 4        # async concurrent episodes
+    # Inference/evaluation cap
     max_steps_per_episode: int = 8
 
     # Task bank — use a curated fast subset during training
     # Full bank is used for evaluation only
+    tasks_file: str = "all"
     training_task_ids: list[str] = field(default_factory=list)  # empty = all tasks
     training_task_limit: int = 40         # cap tasks per epoch for speed
+    task_loader_mode: str = "short"       # short | empty | full | off
 
     # Environment
     env_url: str = "http://localhost:8000"
@@ -70,7 +71,7 @@ class TrainingConfig:
 
     @classmethod
     def for_t4(cls) -> "TrainingConfig":
-        """T4 16GB — Colab free tier, Kaggle.
+        """T4 16GB — low-cost smoke training.
         Fits QLoRA 1.7B easily. Conservative batch to avoid OOM.
         Expected: ~45 min/epoch on 40 tasks."""
         return cls(
@@ -79,24 +80,22 @@ class TrainingConfig:
             per_device_train_batch_size=1,
             gradient_accumulation_steps=8,
             num_generations=4,
-            max_parallel_rollouts=2,
             training_task_limit=40,
             learning_rate=2e-4,
         )
 
     @classmethod
     def for_a100(cls) -> "TrainingConfig":
-        """A100 40GB — Colab Pro+, Kaggle P100, rented (RunPod/Lambda).
+        """A100 80GB on HF Jobs or comparable rented GPU.
         Can push larger batch and more generations.
-        Expected: ~20 min/epoch on 65 tasks."""
+        Expected: ~20 min/epoch on the 78-task bank."""
         return cls(
             load_in_4bit=True,          # still use 4-bit for speed headroom
             lora=LoRAConfig(r=32, lora_alpha=64),
             per_device_train_batch_size=2,
             gradient_accumulation_steps=4,
             num_generations=8,
-            max_parallel_rollouts=8,
-            training_task_limit=65,
+            training_task_limit=78,
             learning_rate=2e-4,
             num_train_epochs=3,
         )
@@ -110,7 +109,6 @@ class TrainingConfig:
             per_device_train_batch_size=1,
             gradient_accumulation_steps=8,
             num_generations=4,
-            max_parallel_rollouts=4,
             training_task_limit=50,
             learning_rate=2e-4,
         )
@@ -118,8 +116,8 @@ class TrainingConfig:
     @classmethod
     def for_h100(cls) -> "TrainingConfig":
         """H100 80GB — full bf16 (no quantization), large LoRA rank.
-        Can fit the whole 65-task bank with 16 generations per prompt.
-        Expected: ~10 min/epoch on 65 tasks."""
+        Can fit the whole 78-task bank with 16 generations per prompt.
+        Expected: ~10 min/epoch on the full bank."""
         return cls(
             load_in_4bit=False,          # H100 has 80GB — quantization is unnecessary
             lora=LoRAConfig(r=64, lora_alpha=128),
@@ -127,8 +125,7 @@ class TrainingConfig:
             gradient_accumulation_steps=4,   # effective batch = 16
             num_train_epochs=5,
             num_generations=16,
-            max_parallel_rollouts=16,
-            training_task_limit=65,
+            training_task_limit=78,
             learning_rate=1e-4,
         )
 
@@ -144,14 +141,12 @@ class TrainingConfig:
             gradient_accumulation_steps=1,
             num_train_epochs=1,
             num_generations=2,
-            max_parallel_rollouts=1,
             training_task_limit=3,
             learning_rate=2e-4,
         )
 
     def estimate_epoch_time_minutes(self) -> float:
-        """Rough estimate: rollout dominates, ~8s per episode on T4."""
+        """Rough estimate for planning GPU reservations."""
         episodes = self.training_task_limit * self.num_generations
-        batches = episodes / max(1, self.max_parallel_rollouts)
-        seconds_per_batch = 8  # heuristic: ~2s/step * 4 steps avg
-        return round(batches * seconds_per_batch / 60, 1)
+        seconds_per_episode = 2.5
+        return round(episodes * seconds_per_episode / 60, 1)

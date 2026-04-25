@@ -1,101 +1,101 @@
 {
   "heuristic": {
     "policy": "heuristic",
-    "episodes": 65,
-    "accuracy": 0.662,
-    "mean_episode_return": 0.651,
+    "episodes": 78,
+    "accuracy": 0.577,
+    "mean_episode_return": 0.621,
     "by_language": {
       "go": {
-        "episodes": 10,
-        "accuracy": 0.6,
-        "mean_episode_return": 0.31
+        "episodes": 12,
+        "accuracy": 0.5,
+        "mean_episode_return": 0.203
       },
       "java": {
-        "episodes": 8,
-        "accuracy": 0.5,
-        "mean_episode_return": 0.652
+        "episodes": 9,
+        "accuracy": 0.444,
+        "mean_episode_return": 0.496
       },
       "javascript": {
         "episodes": 2,
         "accuracy": 0.0,
-        "mean_episode_return": -0.32
+        "mean_episode_return": -0.272
       },
       "python": {
-        "episodes": 14,
-        "accuracy": 0.714,
-        "mean_episode_return": 0.715
+        "episodes": 22,
+        "accuracy": 0.545,
+        "mean_episode_return": 0.658
       },
       "rust": {
-        "episodes": 9,
-        "accuracy": 0.556,
-        "mean_episode_return": 0.343
+        "episodes": 10,
+        "accuracy": 0.5,
+        "mean_episode_return": 0.55
       },
       "typescript": {
-        "episodes": 8,
-        "accuracy": 0.5,
-        "mean_episode_return": 0.372
+        "episodes": 9,
+        "accuracy": 0.444,
+        "mean_episode_return": 0.49
       },
       "yaml": {
         "episodes": 14,
         "accuracy": 1.0,
-        "mean_episode_return": 1.324
+        "mean_episode_return": 1.262
       }
     },
     "by_file_type": {
       "build_manifest": {
         "episodes": 6,
         "accuracy": 0.333,
-        "mean_episode_return": 0.349
+        "mean_episode_return": 0.258
       },
       "dockerfile": {
-        "episodes": 6,
-        "accuracy": 0.667,
-        "mean_episode_return": 0.923
+        "episodes": 7,
+        "accuracy": 0.571,
+        "mean_episode_return": 0.718
       },
       "github_actions": {
-        "episodes": 8,
-        "accuracy": 1.0,
-        "mean_episode_return": 1.05
+        "episodes": 10,
+        "accuracy": 0.9,
+        "mean_episode_return": 1.306
       },
       "gitignore": {
         "episodes": 5,
         "accuracy": 1.0,
-        "mean_episode_return": 0.882
+        "mean_episode_return": 1.045
       },
       "go": {
-        "episodes": 10,
-        "accuracy": 0.6,
-        "mean_episode_return": 0.31
+        "episodes": 12,
+        "accuracy": 0.5,
+        "mean_episode_return": 0.203
       },
       "java": {
-        "episodes": 8,
-        "accuracy": 0.5,
-        "mean_episode_return": 0.652
+        "episodes": 9,
+        "accuracy": 0.444,
+        "mean_episode_return": 0.496
       },
       "javascript": {
         "episodes": 2,
         "accuracy": 0.0,
-        "mean_episode_return": -0.32
+        "mean_episode_return": -0.272
       },
       "python": {
-        "episodes": 12,
-        "accuracy": 0.667,
-        "mean_episode_return": 0.582
+        "episodes": 19,
+        "accuracy": 0.474,
+        "mean_episode_return": 0.538
       },
       "rust": {
-        "episodes": 9,
-        "accuracy": 0.556,
-        "mean_episode_return": 0.343
+        "episodes": 10,
+        "accuracy": 0.5,
+        "mean_episode_return": 0.55
       },
       "typescript": {
-        "episodes": 8,
-        "accuracy": 0.5,
-        "mean_episode_return": 0.372
+        "episodes": 9,
+        "accuracy": 0.444,
+        "mean_episode_return": 0.49
       },
       "yaml": {
-        "episodes": 14,
-        "accuracy": 1.0,
-        "mean_episode_return": 1.214
+        "episodes": 16,
+        "accuracy": 0.938,
+        "mean_episode_return": 1.333
       }
     },
     "examples": [
@@ -107,7 +107,7 @@
         ],
         "expected_verdict": "reject",
         "predicted_verdict": "reject",
-        "episode_return": 1.423,
+        "episode_return": 1.348,
         "tools_called": [
           "check_security",
           "check_quality",
@@ -123,7 +123,7 @@
         ],
         "expected_verdict": "reject",
         "predicted_verdict": "reject",
-        "episode_return": 1.423,
+        "episode_return": 1.348,
         "tools_called": [
           "check_security",
           "check_quality",
@@ -154,7 +154,7 @@
         ],
         "expected_verdict": "request_changes",
         "predicted_verdict": "approve",
-        "episode_return": -0.32,
+        "episode_return": -0.35,
         "tools_called": [
           "check_security",
           "check_quality",
@@ -170,7 +170,7 @@
         ],
         "expected_verdict": "request_changes",
         "predicted_verdict": "request_changes",
-        "episode_return": 1.499,
+        "episode_return": 1.399,
         "tools_called": [
           "check_security",
           "check_config",
@@ -187,7 +187,7 @@
         ],
         "expected_verdict": "request_changes",
         "predicted_verdict": "request_changes",
-        "episode_return": 1.529,
+        "episode_return": 1.461,
         "tools_called": [
           "check_security",
           "check_config",
@@ -203,7 +203,7 @@
         ],
         "expected_verdict": "request_changes",
         "predicted_verdict": "request_changes",
-        "episode_return": 1.481,
+        "episode_return": 1.423,
         "tools_called": [
           "check_security",
           "check_config",
@@ -220,7 +220,7 @@
         ],
         "expected_verdict": "approve",
         "predicted_verdict": "approve",
-        "episode_return": 0.57,
+        "episode_return": 1.352,
         "tools_called": [
           "check_security",
           "check_config",
@@ -234,19 +234,19 @@
   },
   "random": {
     "policy": "random",
-    "episodes": 65,
-    "accuracy": 0.4,
-    "mean_episode_return": -0.029,
+    "episodes": 78,
+    "accuracy": 0.346,
+    "mean_episode_return": -0.042,
     "by_language": {
       "go": {
-        "episodes": 10,
-        "accuracy": 0.6,
-        "mean_episode_return": 0.138
+        "episodes": 12,
+        "accuracy": 0.5,
+        "mean_episode_return": 0.105
       },
       "java": {
-        "episodes": 8,
-        "accuracy": 0.125,
-        "mean_episode_return": -0.348
+        "episodes": 9,
+        "accuracy": 0.111,
+        "mean_episode_return": -0.368
       },
       "javascript": {
         "episodes": 2,
@@ -254,56 +254,56 @@
         "mean_episode_return": -0.5
       },
       "python": {
-        "episodes": 14,
-        "accuracy": 0.357,
-        "mean_episode_return": -0.111
+        "episodes": 22,
+        "accuracy": 0.273,
+        "mean_episode_return": -0.151
       },
       "rust": {
-        "episodes": 9,
-        "accuracy": 0.444,
-        "mean_episode_return": 0.014
+        "episodes": 10,
+        "accuracy": 0.4,
+        "mean_episode_return": 0.066
       },
       "typescript": {
-        "episodes": 8,
-        "accuracy": 0.625,
-        "mean_episode_return": 0.313
+        "episodes": 9,
+        "accuracy": 0.556,
+        "mean_episode_return": 0.232
       },
       "yaml": {
         "episodes": 14,
         "accuracy": 0.357,
-        "mean_episode_return": -0.038
+        "mean_episode_return": 0.022
       }
     },
     "by_file_type": {
       "build_manifest": {
         "episodes": 6,
         "accuracy": 0.5,
-        "mean_episode_return": 0.14
+        "mean_episode_return": 0.119
       },
       "dockerfile": {
-        "episodes": 6,
+        "episodes": 7,
         "accuracy": 0.0,
-        "mean_episode_return": -0.487
+        "mean_episode_return": -0.482
       },
       "github_actions": {
-        "episodes": 8,
-        "accuracy": 0.5,
-        "mean_episode_return": -0.05
+        "episodes": 10,
+        "accuracy": 0.4,
+        "mean_episode_return": -0.039
       },
       "gitignore": {
         "episodes": 5,
         "accuracy": 0.8,
-        "mean_episode_return": 0.417
+        "mean_episode_return": 0.601
       },
       "go": {
-        "episodes": 10,
-        "accuracy": 0.6,
-        "mean_episode_return": 0.138
+        "episodes": 12,
+        "accuracy": 0.5,
+        "mean_episode_return": 0.105
       },
       "java": {
-        "episodes": 8,
-        "accuracy": 0.125,
-        "mean_episode_return": -0.348
+        "episodes": 9,
+        "accuracy": 0.111,
+        "mean_episode_return": -0.368
       },
       "javascript": {
         "episodes": 2,
@@ -311,24 +311,24 @@
         "mean_episode_return": -0.5
       },
       "python": {
-        "episodes": 12,
-        "accuracy": 0.417,
-        "mean_episode_return": -0.046
+        "episodes": 19,
+        "accuracy": 0.316,
+        "mean_episode_return": -0.095
       },
       "rust": {
-        "episodes": 9,
-        "accuracy": 0.444,
-        "mean_episode_return": 0.014
+        "episodes": 10,
+        "accuracy": 0.4,
+        "mean_episode_return": 0.066
       },
       "typescript": {
-        "episodes": 8,
-        "accuracy": 0.625,
-        "mean_episode_return": 0.313
+        "episodes": 9,
+        "accuracy": 0.556,
+        "mean_episode_return": 0.232
       },
       "yaml": {
-        "episodes": 14,
-        "accuracy": 0.571,
-        "mean_episode_return": 0.154
+        "episodes": 16,
+        "accuracy": 0.5,
+        "mean_episode_return": 0.126
       }
     },
     "examples": [
@@ -354,7 +354,7 @@
         ],
         "expected_verdict": "reject",
         "predicted_verdict": "reject",
-        "episode_return": 1.267,
+        "episode_return": 1.345,
         "tools_called": [
           "check_security",
           "submit_review"
@@ -425,7 +425,7 @@
         ],
         "expected_verdict": "request_changes",
         "predicted_verdict": "request_changes",
-        "episode_return": 1.305,
+        "episode_return": 1.299,
         "tools_called": [
           "check_config",
           "submit_review"

@@ -1,12 +1,11 @@
-"""LLM vs SLM context loader benchmark.
+"""Post-training context loader benchmark.
 
 Compares the quality of review_config.json produced by:
   - Structural parsing only (no model)
   - Qwen3-1.7B SLM extraction
-  - Larger model extraction (Qwen3-7B or API)
 
-Then runs the trained SLM router with each config against the comprehensive
-task bank and reports accuracy and mean return per config.
+Then runs the trained router against a selected task bank and reports accuracy
+and mean return per config.
 
 This is a MANUAL benchmark — run after training is complete.
 Not called during training. No LLM calls in the training path.
@@ -17,16 +16,15 @@ Usage:
         --docs-dir docs/ \
         --checkpoint grpo_checkpoint/ \
         --env-url http://localhost:8000 \
-        --tasks-file tasks/comprehensive_tasks.jsonl
+        --task-bank all
 
-    # Also compare against a larger model (requires model or API access):
+    # Optional: compare against another local model.
     python benchmarks/loader_benchmark.py \
         --docs-dir docs/ \
         --checkpoint grpo_checkpoint/ \
         --env-url http://localhost:8000 \
         --compare-slm Qwen/Qwen3-1.7B \
-        --compare-llm Qwen/Qwen3-7B \
-        --tasks-file tasks/comprehensive_tasks.jsonl \
+        --task-bank comprehensive \
         --output rewards/loader_benchmark.json
 """
 from __future__ import annotations
@@ -270,12 +268,8 @@ async def run_benchmark(
 ) -> None:
     # Load tasks
     from envs.pr_review_env.server.tasks import load_tasks
-    try:
-        from tasks.comprehensive_tasks import COMPREHENSIVE_TASKS as tasks
-        print(f"Using {len(tasks)} comprehensive tasks")
-    except ImportError:
-        tasks = load_tasks(tasks_file)
-        print(f"Using {len(tasks)} tasks from {tasks_file}")
+    tasks = load_tasks(tasks_file)
+    print(f"Using {len(tasks)} tasks from {tasks_file}")
 
     # Build configs to compare
     configs_to_test: list[tuple[str, dict]] = []
@@ -332,13 +326,13 @@ async def run_benchmark(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="LLM vs SLM loader benchmark")
+    parser = argparse.ArgumentParser(description="Post-training loader benchmark")
     parser.add_argument("--docs-dir", default="docs/", help="Path to org docs directory")
     parser.add_argument("--checkpoint", default="", help="Path to trained LoRA checkpoint (empty = heuristic fallback)")
     parser.add_argument("--env-url", default="http://localhost:8000")
-    parser.add_argument("--tasks-file", default="tasks/comprehensive_tasks.jsonl")
+    parser.add_argument("--tasks-file", "--task-bank", dest="tasks_file", default="all")
     parser.add_argument("--compare-slm", default="", help="SLM model ID for extraction comparison")
-    parser.add_argument("--compare-llm", default="", help="Larger model ID for extraction comparison")
+    parser.add_argument("--compare-llm", default="", help="Optional second model ID for extraction comparison")
     parser.add_argument("--output", default="rewards/loader_benchmark.json")
     args = parser.parse_args()
 

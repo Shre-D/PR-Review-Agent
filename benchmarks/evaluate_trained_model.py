@@ -14,7 +14,8 @@ if str(ROOT) not in sys.path:
 from envs.pr_review_env.models import PRReviewAction, PRReviewObservation
 from envs.pr_review_env.server.context_loader import load_review_config
 from envs.pr_review_env.server.pr_review_env import PRReviewEnv
-from envs.pr_review_env.server.tasks import PRTask, load_tasks
+from envs.pr_review_env.server.tasks import PRTask, load_tasks, task_review_config
+from train.adaptive_router import review_requirements
 from train.grpo_train import _action_with_state_args, build_obs_prompt, parse_action
 from train.train_config import TrainingConfig
 
@@ -115,15 +116,21 @@ def run_episode(
     cfg: TrainingConfig,
     review_config: dict | None = None,
 ) -> dict[str, Any]:
-    env = PRReviewEnv(seed=7, review_config=review_config)
+    task_config = review_config or task_review_config(task, mode=cfg.task_loader_mode)
+    env = PRReviewEnv(seed=7, task_path=cfg.tasks_file, review_config=task_config)
     obs = env.reset(task_id=task.task_id)
+    route = review_requirements(obs, task_config)
     episode_return = 0.0
     last_action = None
+    invalid_actions = 0
 
-    for _ in range(cfg.max_steps_per_episode):
-        messages = build_prompt_messages(obs, review_config)
+    for _ in range(route["max_steps"]):
+        messages = build_prompt_messages(obs, task_config)
         response_text = generate_action_text(model, tokenizer, messages, cfg.max_new_tokens)
-        action = _action_with_state_args(parse_action(response_text), obs)
+        parsed = parse_action(response_text)
+        action = _action_with_state_args(parsed, obs)
+        if parsed.tool_name not in set(obs.available_tools):
+            invalid_actions += 1
         last_action = action
         obs = env.step(action)
         episode_return += obs.reward or 0.0
@@ -146,6 +153,25 @@ def run_episode(
         "episode_return": round(episode_return, 3),
         "tools_called": obs.tools_called,
         "done": obs.done,
+        "route_tier": route["tier"],
+        "route_min_tools": route["min_tools"],
+        "route_max_steps": route["max_steps"],
+        "steps_used": obs.step_count,
+        "duplicate_tools": max(
+            0,
+            len([t for t in obs.tools_called if t not in {"submit_review", "escalate"}])
+            - len(set(t for t in obs.tools_called if t not in {"submit_review", "escalate"})),
+        ),
+        "invalid_actions": invalid_actions,
+        "early_submit": bool(
+            obs.final_verdict is not None and len(obs.tool_results) < int(route["min_tools"])
+        ),
+        "over_budget": not obs.done,
+        "evidence_backed_verdict": bool(
+            obs.final_verdict is not None
+            and len(set(obs.tool_results) & set(obs.metadata.get("relevant_tools", []))) > 0
+        ),
+        "context_dependent": bool(getattr(task, "context_requirements", [])),
     }
 
 
@@ -153,6 +179,15 @@ def summarize_results(results: list[dict[str, Any]], policy_name: str) -> dict[s
     by_language = defaultdict(lambda: {"episodes": 0, "return_sum": 0.0, "correct": 0})
     total_return = 0.0
     correct = 0
+    duplicate_total = 0
+    invalid_total = 0
+    early_submit_total = 0
+    over_budget_total = 0
+    evidence_backed_total = 0
+    steps_by_tier = defaultdict(list)
+    tool_calls = []
+    unique_tool_calls = []
+    context_results = []
 
     for result in results:
         total_return += result["episode_return"]
@@ -161,9 +196,20 @@ def summarize_results(results: list[dict[str, Any]], policy_name: str) -> dict[s
         bucket["episodes"] += 1
         bucket["return_sum"] += result["episode_return"]
         bucket["correct"] += int(result["correct"])
+        duplicate_total += result.get("duplicate_tools", 0)
+        invalid_total += result.get("invalid_actions", 0)
+        early_submit_total += int(result.get("early_submit", False))
+        over_budget_total += int(result.get("over_budget", False))
+        evidence_backed_total += int(result.get("evidence_backed_verdict", False))
+        steps_by_tier[result.get("route_tier", "unknown")].append(result.get("steps_used", 0))
+        non_terminal = [t for t in result.get("tools_called", []) if t not in {"submit_review", "escalate"}]
+        tool_calls.append(len(non_terminal))
+        unique_tool_calls.append(len(set(non_terminal)))
+        if result.get("context_dependent"):
+            context_results.append(result)
 
     episodes = len(results) or 1
-    return {
+    summary = {
         "policy": policy_name,
         "episodes": len(results),
         "accuracy": round(correct / episodes, 3),
@@ -177,18 +223,42 @@ def summarize_results(results: list[dict[str, Any]], policy_name: str) -> dict[s
             for key, value in sorted(by_language.items())
         },
         "examples": results[:8],
+        "duplicate_tool_rate": round(duplicate_total / episodes, 3),
+        "invalid_action_rate": round(invalid_total / episodes, 3),
+        "early_submit_rate": round(early_submit_total / episodes, 3),
+        "over_budget_rate": round(over_budget_total / episodes, 3),
+        "evidence_backed_verdict_rate": round(evidence_backed_total / episodes, 3),
+        "mean_steps_by_tier": {
+            tier: round(sum(values) / max(len(values), 1), 3)
+            for tier, values in sorted(steps_by_tier.items())
+        },
+        "mean_tool_calls": round(sum(tool_calls) / max(len(tool_calls), 1), 3),
+        "mean_unique_tool_calls": round(sum(unique_tool_calls) / max(len(unique_tool_calls), 1), 3),
     }
+    if context_results:
+        context_episodes = len(context_results)
+        summary["context_dependent"] = {
+            "episodes": context_episodes,
+            "accuracy": round(sum(int(item["correct"]) for item in context_results) / context_episodes, 3),
+            "mean_episode_return": round(sum(item["episode_return"] for item in context_results) / context_episodes, 3),
+        }
+    return summary
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a trained PR review SLM checkpoint.")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--base-model", default="Qwen/Qwen3-1.7B")
-    parser.add_argument("--tasks-file", default="tasks/tasks.jsonl")
+    parser.add_argument("--tasks-file", "--task-bank", dest="tasks_file", default="all")
     parser.add_argument("--limit", type=int, default=0, help="0 means all tasks")
     parser.add_argument("--output", default=str(ROOT / "rewards" / "trained_eval.json"))
     parser.add_argument("--review-config", default="")
     parser.add_argument("--preset", default="cpu", choices=["cpu", "t4", "a100", "v100", "h100"])
+    parser.add_argument(
+        "--task-loader-mode",
+        default="short",
+        choices=["short", "empty", "full", "off", "none"],
+    )
     args = parser.parse_args()
 
     if not checkpoint_ready(args.checkpoint):
@@ -206,6 +276,8 @@ def main() -> None:
         "h100": TrainingConfig.for_h100,
     }
     cfg = preset_map[args.preset]()
+    cfg.tasks_file = args.tasks_file
+    cfg.task_loader_mode = args.task_loader_mode
     review_config = load_review_config(args.review_config)
     model, tokenizer = load_policy_model(args.base_model, args.checkpoint)
     tasks = select_tasks(args.tasks_file, args.limit)

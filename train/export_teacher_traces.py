@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 from benchmarks.run_baselines import decide_final_verdict, heuristic_policy
 from envs.pr_review_env.models import PRReviewAction, PRReviewObservation
 from envs.pr_review_env.server.pr_review_env import PRReviewEnv
-from envs.pr_review_env.server.tasks import load_tasks
+from envs.pr_review_env.server.tasks import load_tasks, task_review_config
 
 
 def build_prompt(observation: PRReviewObservation) -> str:
@@ -57,14 +57,22 @@ def action_to_message(action: PRReviewAction) -> str:
     )
 
 
-def export_teacher_traces(limit: int | None = None) -> list[dict]:
-    env = PRReviewEnv(seed=7)
-    tasks = load_tasks()
+def export_teacher_traces(
+    limit: int | None = None,
+    tasks_file: str = "all",
+    task_loader_mode: str = "short",
+) -> list[dict]:
+    tasks = load_tasks(tasks_file)
     if limit is not None:
         tasks = tasks[:limit]
 
     traces: list[dict] = []
     for task in tasks:
+        env = PRReviewEnv(
+            seed=7,
+            task_path=tasks_file,
+            review_config=task_review_config(task, mode=task_loader_mode),
+        )
         observation = env.reset(task_id=task.task_id)
         prompt = build_prompt(observation)
         actions = heuristic_policy(observation)
@@ -112,6 +120,12 @@ def export_teacher_traces(limit: int | None = None) -> list[dict]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export heuristic teacher traces for prompt tuning or offline analysis.")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--tasks-file", "--task-bank", dest="tasks_file", default="all")
+    parser.add_argument(
+        "--task-loader-mode",
+        default="short",
+        choices=["short", "empty", "full", "off", "none"],
+    )
     parser.add_argument(
         "--output",
         default=str(ROOT / "train" / "teacher_traces.jsonl"),
@@ -121,7 +135,11 @@ def main() -> None:
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    traces = export_teacher_traces(limit=args.limit)
+    traces = export_teacher_traces(
+        limit=args.limit,
+        tasks_file=args.tasks_file,
+        task_loader_mode=args.task_loader_mode,
+    )
     with output_path.open("w", encoding="utf-8") as handle:
         for trace in traces:
             handle.write(json.dumps(trace) + "\n")

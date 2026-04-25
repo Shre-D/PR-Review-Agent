@@ -12,7 +12,7 @@ Usage:
     python train/grpo_train.py --preset t4 --env-url http://localhost:8000
 
     # Explicit options:
-    python train/grpo_train.py --preset a100 --epochs 3 --task-limit 65
+    python train/grpo_train.py --preset a100 --epochs 3 --task-bank all --task-limit 78
 
     # CPU smoke test (verifies imports, 3 tasks):
     python train/grpo_train.py --preset cpu --env-url http://localhost:8000
@@ -20,25 +20,23 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import csv
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from envs.pr_review_env.client.pr_review_env_client import PRReviewEnvClient
 from envs.pr_review_env.models import PRReviewAction, PRReviewObservation
 from envs.pr_review_env.server.context_loader import load_review_config
+from envs.pr_review_env.server.grader import reward_floor, reward_near_floor
 from envs.pr_review_env.server.pr_review_env import PRReviewEnv
-from envs.pr_review_env.server.tasks import load_tasks
+from envs.pr_review_env.server.tasks import load_tasks, task_review_config
 from benchmarks.run_baselines import decide_final_verdict, heuristic_policy
-from train.adaptive_router import prompt_route_context
+from train.adaptive_router import prompt_route_context, review_requirements
 from train.train_config import TrainingConfig  # noqa: E402 — after sys.path setup
 
 # Heavy ML deps — guarded so file stays importable without trl installed
@@ -64,7 +62,8 @@ You are a code reviewer. For each step output a JSON tool call only — no prose
 
 Tools: check_security, check_quality, check_build_and_types, check_tests, check_config, submit_review, escalate.
 
-For submit_review: {"tool_name": "submit_review", "arguments": {"verdict": "<approve|request_changes|reject>", "confidence": 0.9, "reasoning": "<one sentence>"}}
+For submit_review: {"tool_name": "submit_review", "arguments": {"verdict": "<approve|request_changes|reject>", "confidence": <0.0-1.0>, "reasoning": "<one sentence>"}}
+Calibrate confidence: high (>=0.8) only when at least min_tools have run and findings are unambiguous.
 """
 
 
@@ -188,7 +187,7 @@ def build_training_state_rows(
     review_config: dict | None = None,
 ) -> list[dict]:
     """Build trainable env states. Rewards are computed online, not precomputed."""
-    tasks = load_tasks()
+    tasks = load_tasks(cfg.tasks_file)
     if cfg.training_task_ids:
         tasks = [task for task in tasks if task.task_id in set(cfg.training_task_ids)]
     if cfg.training_task_limit and len(tasks) > cfg.training_task_limit:
@@ -196,16 +195,19 @@ def build_training_state_rows(
 
     rows: list[dict] = []
     for task in tasks:
-        env = PRReviewEnv(seed=7, review_config=review_config)
+        task_config = review_config or task_review_config(task, mode=cfg.task_loader_mode)
+        env = PRReviewEnv(seed=7, task_path=cfg.tasks_file, review_config=task_config)
         obs = env.reset(task_id=task.task_id)
         replay_actions: list[dict] = []
 
         for teacher_action in heuristic_policy(obs):
             rows.append(
                 {
-                    "prompt": training_prompt(obs, review_config),
+                    "prompt": training_prompt(obs, task_config),
                     "task_id": task.task_id,
                     "replay_actions": list(replay_actions),
+                    "review_config": task_config,
+                    "route": review_requirements(obs, task_config),
                 }
             )
             obs = env.step(_action_with_state_args(teacher_action, obs))
@@ -216,9 +218,11 @@ def build_training_state_rows(
         if not obs.done:
             rows.append(
                 {
-                    "prompt": training_prompt(obs, review_config),
+                    "prompt": training_prompt(obs, task_config),
                     "task_id": task.task_id,
                     "replay_actions": list(replay_actions),
+                    "review_config": task_config,
+                    "route": review_requirements(obs, task_config),
                 }
             )
             final_action = decide_final_verdict(obs)
@@ -232,32 +236,33 @@ def score_completion_locally(
     task_id: str,
     replay_actions: list[dict] | None = None,
     review_config: dict | None = None,
+    task_path: str | None = None,
 ) -> float:
     text = _completion_to_text(completion)
     if extract_action_payload(text) is None:
-        return -0.75
+        return reward_floor()
 
-    env = PRReviewEnv(seed=7, review_config=review_config)
+    env = PRReviewEnv(seed=7, task_path=task_path, review_config=review_config)
     obs = env.reset(task_id=task_id)
     try:
         for payload in replay_actions or []:
             replay_action = PRReviewAction.model_validate(payload)
             obs = env.step(_action_with_state_args(replay_action, obs))
             if obs.done:
-                return -0.50
+                return reward_floor()
 
         action = _action_with_state_args(parse_action(text), obs)
         obs = env.step(action)
     except Exception:
-        return -0.75
+        return reward_floor()
 
     reward = float(obs.reward or 0.0)
     if obs.last_tool_result.get("error"):
-        reward -= 0.75
+        return reward_near_floor()
     return round(reward, 3)
 
 
-def make_env_reward_func(review_config: dict | None = None):
+def make_env_reward_func(review_config: dict | None = None, task_path: str | None = None):
     """Create a TRL reward function that scores completions in PRReviewEnv."""
 
     def reward_func(completions, task_id=None, replay_actions=None, **kwargs):
@@ -265,137 +270,17 @@ def make_env_reward_func(review_config: dict | None = None):
         if task_ids is None:
             raise ValueError("GRPO reward function requires task_id dataset column")
         replays = replay_actions or kwargs.get("replay_actions") or [None] * len(completions)
+        review_configs = kwargs.get("review_config") or [review_config] * len(completions)
         if isinstance(task_ids, str):
             task_ids = [task_ids] * len(completions)
+        if isinstance(review_configs, dict) or review_configs is None:
+            review_configs = [review_configs] * len(completions)
         rewards = []
-        for completion, tid, replay in zip(completions, task_ids, replays):
-            rewards.append(score_completion_locally(completion, tid, replay, review_config))
+        for completion, tid, replay, cfg_payload in zip(completions, task_ids, replays, review_configs):
+            rewards.append(score_completion_locally(completion, tid, replay, cfg_payload, task_path))
         return rewards
 
     return reward_func
-
-
-# ---------------------------------------------------------------------------
-# Rollout — single episode
-# ---------------------------------------------------------------------------
-
-async def rollout_episode(
-    env_client: PRReviewEnvClient,
-    model,
-    tokenizer,
-    device,
-    cfg: TrainingConfig,
-    task_id: str | None = None,
-    review_config: dict | None = None,
-) -> dict:
-    """Run one full episode. Returns {prompt, response, reward}."""
-    reset_kwargs = {"task_id": task_id} if task_id else {}
-    step_result = await env_client.reset(**reset_kwargs)
-    obs = step_result.observation
-
-    system_msg = {"role": "system", "content": SYSTEM_PROMPT}
-    first_user = {"role": "user", "content": build_obs_prompt(obs, review_config)}
-    messages = [system_msg, first_user]
-
-    total_reward = 0.0
-    last_response = ""
-
-    for _ in range(cfg.max_steps_per_episode):
-        input_ids = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt"
-        ).to(device)
-
-        with torch.no_grad():
-            output_ids = model.generate(
-                input_ids,
-                max_new_tokens=cfg.max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-                use_cache=True,
-            )
-
-        new_tokens = output_ids[0][input_ids.shape[-1]:]
-        response_text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
-        last_response = response_text
-
-        action = _action_with_state_args(parse_action(response_text), obs)
-        step_result = await env_client.step(action)
-        obs = step_result.observation
-        total_reward += step_result.reward or 0.0
-
-        messages.append({"role": "assistant", "content": response_text})
-        if obs.done:
-            break
-        messages.append({"role": "user", "content": build_obs_prompt(obs, review_config)})
-
-    prompt_text = tokenizer.apply_chat_template(
-        [system_msg, first_user], add_generation_prompt=True, tokenize=False
-    )
-    return {"prompt": prompt_text, "response": last_response, "reward": total_reward}
-
-
-# ---------------------------------------------------------------------------
-# Parallel trajectory collection
-# ---------------------------------------------------------------------------
-
-async def _collect_batch(
-    env_url: str,
-    model,
-    tokenizer,
-    device,
-    cfg: TrainingConfig,
-    task_ids: list[str],
-    review_config: dict | None = None,
-) -> list[dict]:
-    """Collect one rollout per task_id, up to max_parallel_rollouts concurrent."""
-    sem = asyncio.Semaphore(cfg.max_parallel_rollouts)
-
-    async def _one(task_id: str) -> dict:
-        async with sem:
-            async with PRReviewEnvClient(base_url=env_url) as client:
-                return await rollout_episode(client, model, tokenizer, device, cfg, task_id, review_config)
-
-    return await asyncio.gather(*[_one(tid) for tid in task_ids])
-
-
-async def collect_trajectories(
-    env_url: str,
-    model,
-    tokenizer,
-    device,
-    cfg: TrainingConfig,
-    review_config: dict | None = None,
-) -> list[dict]:
-    """Sample cfg.training_task_limit tasks, run cfg.num_generations rollouts each."""
-    import random
-
-    tasks = load_tasks()
-    if cfg.training_task_ids:
-        tasks = [t for t in tasks if t.task_id in set(cfg.training_task_ids)]
-    if cfg.training_task_limit and len(tasks) > cfg.training_task_limit:
-        tasks = random.sample(tasks, cfg.training_task_limit)
-
-    # Expand: each task repeated num_generations times
-    task_ids = [t.task_id for t in tasks for _ in range(cfg.num_generations)]
-
-    t0 = time.time()
-    trajectories = await _collect_batch(env_url, model, tokenizer, device, cfg, task_ids, review_config)
-    elapsed = round(time.time() - t0, 1)
-    rewards = [t["reward"] for t in trajectories]
-    mean_r = sum(rewards) / max(len(rewards), 1)
-    correct = sum(1 for t in trajectories if _verdict_correct(t))
-    acc = correct / max(len(trajectories), 1)
-    print(
-        f"  Collected {len(trajectories)} trajectories in {elapsed}s — "
-        f"mean_reward={mean_r:+.3f}  accuracy={acc:.3f}"
-    )
-    return trajectories
-
-
-def _verdict_correct(traj: dict) -> bool:
-    """Heuristic: response contains 'correct' verdict signal (can't check ground truth here)."""
-    # The reward being > 0.8 is a reasonable proxy for a correct terminal verdict
-    return traj["reward"] > 0.8
 
 
 def build_dataset(rows: list[dict]) -> "Dataset":
@@ -488,17 +373,29 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="GRPO training for PR review (SLM-only, QLoRA)")
     parser.add_argument("--preset", default="t4",
                         choices=["t4", "a100", "v100", "h100", "cpu"],
-                        help="Hardware preset (sets batch size, LoRA rank, parallelism)")
+                        help="Hardware preset (sets batch size, LoRA rank, generations, and task limit)")
     parser.add_argument("--env-url", default=os.getenv("PR_REVIEW_ENV_URL", "http://localhost:8000"))
     parser.add_argument("--epochs", type=int, default=None, help="Override preset epoch count")
     parser.add_argument("--output-dir", default="./grpo_checkpoint")
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--num-generations", type=int, default=None)
     parser.add_argument("--task-limit", type=int, default=None)
+    parser.add_argument("--tasks-file", "--task-bank", dest="tasks_file", default="all")
+    parser.add_argument(
+        "--task-loader-mode",
+        default="short",
+        choices=["short", "empty", "full", "off", "none"],
+        help="Per-task loader config included in prompts/rewards.",
+    )
     parser.add_argument("--lora-r", type=int, default=None)
     parser.add_argument("--review-config", default="", help="Optional review_config.json generated from docs.")
     parser.add_argument("--report-to", default="none", choices=["none", "wandb", "tensorboard"])
     parser.add_argument("--wandb", action="store_true", help="Shorthand for --report-to wandb")
+    parser.add_argument(
+        "--hub-model-id",
+        default=os.getenv("HF_HUB_MODEL_ID", ""),
+        help="Optional Hub repo ID for pushing the trained LoRA adapter, e.g. user/pr-review-qwen3-1p7b.",
+    )
     args = parser.parse_args()
 
     if not _ML_AVAILABLE:
@@ -515,6 +412,8 @@ def main() -> None:
     cfg = preset_map[args.preset]()
     cfg.output_dir = args.output_dir
     cfg.env_url = args.env_url
+    cfg.tasks_file = args.tasks_file
+    cfg.task_loader_mode = args.task_loader_mode
     if args.epochs is not None:
         cfg.num_train_epochs = args.epochs
     if args.lr is not None:
@@ -532,9 +431,15 @@ def main() -> None:
         cfg.report_to = args.report_to
     review_config = load_review_config(args.review_config)
 
+    # Propagate env_backend to the env var read by tools.py.
+    # TrainingConfig defaults to "heuristic" — no subprocess tool calls during training.
+    # Must be set before any PRReviewEnv is instantiated (including inside reward_func).
+    os.environ.setdefault("PR_REVIEW_TOOL_BACKEND", cfg.env_backend)
+
     est = cfg.estimate_epoch_time_minutes()
     print(f"Preset: {args.preset}  |  tasks={cfg.training_task_limit}  "
           f"generations={cfg.num_generations}  epochs={cfg.num_train_epochs}")
+    print(f"Task bank: {cfg.tasks_file}  |  task loader: {cfg.task_loader_mode}")
     print(f"Estimated time: ~{est} min/epoch × {cfg.num_train_epochs} = "
           f"~{round(est * cfg.num_train_epochs)} min total")
     if review_config:
@@ -542,7 +447,6 @@ def main() -> None:
 
     # Load model
     model, tokenizer = load_model_qlora(cfg)
-    device = next(p for p in model.parameters() if p.requires_grad).device
 
     print("\nBuilding online-reward training states...")
     rows = build_training_state_rows(cfg, review_config)
@@ -570,6 +474,8 @@ def main() -> None:
         fp16=not torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False,
         dataloader_pin_memory=False,
         remove_unused_columns=False,
+        push_to_hub=bool(args.hub_model_id),
+        hub_model_id=args.hub_model_id or None,
     )
 
     log_csv = Path(cfg.output_dir) / "training_log.csv"
@@ -577,7 +483,7 @@ def main() -> None:
 
     trainer = GRPOTrainer(
         model=model,
-        reward_funcs=[make_env_reward_func(review_config)],
+        reward_funcs=[make_env_reward_func(review_config, cfg.tasks_file)],
         args=grpo_cfg,
         train_dataset=dataset,
         processing_class=tokenizer,
@@ -587,8 +493,13 @@ def main() -> None:
     print("\nStarting GRPO training...")
     trainer.train()
     trainer.save_model(cfg.output_dir)
+    tokenizer.save_pretrained(cfg.output_dir)
+    if args.hub_model_id:
+        trainer.push_to_hub()
     print(f"\nLoRA checkpoint saved  → {cfg.output_dir}")
     print(f"Training log (CSV)     → {log_csv}")
+    if args.hub_model_id:
+        print(f"Hub checkpoint         → {args.hub_model_id}")
     print("To generate report:      python benchmarks/generate_report.py")
 
 

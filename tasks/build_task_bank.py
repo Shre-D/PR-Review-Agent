@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from envs.pr_review_env.server.tasks import PRTask, dump_tasks
+from envs.pr_review_env.server.tasks import PRTask, dump_all_tasks, dump_tasks
 
 
 def task(
@@ -752,10 +752,22 @@ def main() -> None:
         action="store_true",
         help="Print a small JSON summary after writing the file.",
     )
+    parser.add_argument(
+        "--all-output",
+        default=str(ROOT / "tasks" / "all_tasks.jsonl"),
+        help="Path to the combined seed+comprehensive JSONL file.",
+    )
+    parser.add_argument(
+        "--skip-all",
+        action="store_true",
+        help="Only write the seed bank, not the combined all-task bank.",
+    )
     args = parser.parse_args()
 
     task_bank = build_task_bank()
     dump_tasks(task_bank, args.output)
+    if not args.skip_all:
+        dump_all_tasks(args.all_output)
 
     if args.print_summary:
         languages: dict[str, int] = {}
@@ -766,6 +778,7 @@ def main() -> None:
                 {
                     "tasks_written": len(task_bank),
                     "output": str(args.output),
+                    "all_output": "" if args.skip_all else str(args.all_output),
                     "by_primary_language": languages,
                 }
             )

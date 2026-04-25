@@ -1,97 +1,76 @@
-#!/bin/bash
-# train_h100.slurm — GRPO training job for the PR review agent on H100.
-#
-# Submit from the repo root:
-#   sbatch hpc/train_h100.slurm
-#
-# Prerequisites:
-#   bash hpc/setup_env.sh    (run once on login node first)
-#
-# NOTE: If your account requires a QOS flag, add:
-#   #SBATCH --qos=<qos_name>
-# Run `sacctmgr show qos | grep h100` on the login node to find the full name.
+#!/usr/bin/env bash
+# Submit from the repository root: sbatch hpc/train_h100.slurm
 
 #SBATCH --job-name=pr-review-grpo
 #SBATCH --partition=gpu_h100_4
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=80G
-#SBATCH --time=02:00:00
-#SBATCH --output=/home/kulkarnis/PR-Review-Agent/logs/grpo_%j.out
-#SBATCH --error=/home/kulkarnis/PR-Review-Agent/logs/grpo_%j.err
+#SBATCH --time=03:00:00
+#SBATCH --output=logs/grpo_%j.out
+#SBATCH --error=logs/grpo_%j.err
 
 set -euo pipefail
 
-REPO_DIR="$HOME/PR-Review-Agent"
-ENV_DIR="/scratch/kulkarnis/envs/pr-review"
-HF_CACHE="/scratch/kulkarnis/hf_cache"
-OUTPUT_DIR="/scratch/kulkarnis/grpo_checkpoint"
-REWARDS_DIR="/scratch/kulkarnis/rewards"
+REPO_DIR="${REPO_DIR:-$SLURM_SUBMIT_DIR}"
+ENV_DIR="${ENV_DIR:-/scratch/$USER/envs/pr-review}"
+HF_CACHE="${HF_CACHE:-/scratch/$USER/hf_cache}"
+OUTPUT_DIR="${OUTPUT_DIR:-/scratch/$USER/pr-review/grpo_checkpoint}"
+REWARDS_DIR="${REWARDS_DIR:-/scratch/$USER/pr-review/rewards}"
+CONDA_MODULE="${CONDA_MODULE:-anaconda3-2022.05-gcc-11.2.0-od5lltp}"
 
-# --- Modules ---
-module load cuda-12.1.0-gcc-11.2.0-s5o57xp
-module load anaconda3-2022.05-gcc-11.2.0-od5lltp
-
-# --- Activate env ---
-# shellcheck disable=SC1091
-source activate "$ENV_DIR"
-
-# --- Environment variables ---
-export HF_HOME="$HF_CACHE"
-export TRANSFORMERS_OFFLINE=1     # use pre-downloaded weights; no network needed
-export HF_DATASETS_OFFLINE=1
-export PR_REVIEW_TOOL_BACKEND=heuristic   # no external tool calls during training
-
-# --- Dirs ---
-mkdir -p "$OUTPUT_DIR" "$REWARDS_DIR" "$REPO_DIR/logs"
-
-# --- Diagnostics ---
-echo "========================================"
-echo "Job ID   : $SLURM_JOB_ID"
-echo "Node     : $(hostname)"
-echo "GPU      : $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
-echo "Python   : $(python --version)"
-echo "========================================"
-nvidia-smi
-
+mkdir -p "$REPO_DIR/logs" "$OUTPUT_DIR" "$REWARDS_DIR"
 cd "$REPO_DIR"
 
-# --- Train ---
-echo ""
-echo "=== Starting GRPO training (h100 preset) ==="
+echo "job_id=${SLURM_JOB_ID:-local}"
+echo "start=$(date)"
+echo "node=$(hostname)"
+nvidia-smi --query-gpu=name,memory.total --format=csv || true
+
+module load "$CONDA_MODULE"
+eval "$(conda shell.bash hook)"
+conda activate "$ENV_DIR"
+
+export HF_HOME="$HF_CACHE"
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+export HF_DATASETS_OFFLINE="${HF_DATASETS_OFFLINE:-1}"
+export PR_REVIEW_TOOL_BACKEND=heuristic
+
+python - <<'PY'
+import torch
+from trl import GRPOConfig
+print(f"python ready; cuda={torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(torch.cuda.get_device_name(0))
+PY
+
+python tasks/build_task_bank.py --print-summary
+
 python train/grpo_train.py \
     --preset h100 \
+    --task-bank all \
+    --task-loader-mode short \
     --output-dir "$OUTPUT_DIR" \
     --report-to none
 
-echo ""
-echo "=== Training complete. Checkpoint at $OUTPUT_DIR ==="
+python benchmarks/evaluate_baselines.py \
+    --task-bank all \
+    --task-loader-mode short \
+    --output "$REWARDS_DIR/baseline_eval.json"
 
-# --- Evaluate trained model vs baselines ---
-echo ""
-echo "=== Running evaluation on trained checkpoint ==="
 python benchmarks/evaluate_trained_model.py \
     --checkpoint "$OUTPUT_DIR" \
     --preset h100 \
+    --task-bank all \
+    --task-loader-mode short \
     --output "$REWARDS_DIR/trained_eval.json"
 
-# Copy baseline artifact alongside trained eval so generate_report can find both
-cp "$REPO_DIR/rewards/baseline_eval.json" "$REWARDS_DIR/baseline_eval.json"
-
-# --- Generate visual report ---
-echo ""
-echo "=== Generating comparison report ==="
 python benchmarks/generate_report.py \
     --baseline "$REWARDS_DIR/baseline_eval.json" \
-    --trained  "$REWARDS_DIR/trained_eval.json" \
-    --log      "$OUTPUT_DIR/training_log.csv" \
-    --output   "$REWARDS_DIR/comparison_report.png"
+    --trained "$REWARDS_DIR/trained_eval.json" \
+    --log "$OUTPUT_DIR/training_log.csv" \
+    --output "$REWARDS_DIR/comparison_report.png" || true
 
-echo ""
-echo "========================================"
-echo "Artifacts:"
-echo "  Checkpoint : $OUTPUT_DIR"
-echo "  Trained eval: $REWARDS_DIR/trained_eval.json"
-echo "  Training log: $OUTPUT_DIR/training_log.csv"
-echo "  Report PNG  : $REWARDS_DIR/comparison_report.png"
-echo "========================================"
+echo "finished=$(date)"
+echo "checkpoint=$OUTPUT_DIR"
+echo "trained_eval=$REWARDS_DIR/trained_eval.json"

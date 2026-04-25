@@ -1,70 +1,57 @@
-#!/bin/bash
-# setup_env.sh — run ONCE on the login node before submitting the training job.
-#
-# Usage:
-#   cd ~/PR-Review-Agent
-#   bash hpc/setup_env.sh
-#
-# What it does:
-#   1. Loads CUDA 12.1 + Anaconda modules
-#   2. Creates a conda env in /scratch (preserves home quota)
-#   3. Installs project + ML dependencies
-#   4. Pre-downloads Qwen3-1.7B weights to /scratch/hf_cache
-#      (compute nodes may not have outbound internet)
+#!/usr/bin/env bash
+# Prepare a Python 3.11 training environment on an HPC login node.
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_DIR="/scratch/kulkarnis/envs/pr-review"
-HF_CACHE="/scratch/kulkarnis/hf_cache"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+ENV_DIR="${ENV_DIR:-/scratch/$USER/envs/pr-review}"
+HF_CACHE="${HF_CACHE:-/scratch/$USER/hf_cache}"
+CONDA_MODULE="${CONDA_MODULE:-anaconda3-2022.05-gcc-11.2.0-od5lltp}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 
-echo "=== Loading modules ==="
-module load cuda-12.1.0-gcc-11.2.0-s5o57xp
-module load anaconda3-2022.05-gcc-11.2.0-od5lltp
+echo "Loading conda module: $CONDA_MODULE"
+module load "$CONDA_MODULE"
+eval "$(conda shell.bash hook)"
 
-echo "=== Creating conda env at $ENV_DIR ==="
 if [ -d "$ENV_DIR" ]; then
-    echo "  Already exists — skipping create"
+    echo "Using existing environment: $ENV_DIR"
+    conda activate "$ENV_DIR"
 else
-    conda create -y -p "$ENV_DIR" python=3.10
+    echo "Creating environment: $ENV_DIR"
+    conda create -y -p "$ENV_DIR" "python=$PYTHON_VERSION"
+    conda activate "$ENV_DIR"
 fi
 
-# shellcheck disable=SC1091
-source activate "$ENV_DIR"
-
-echo "=== Installing project ==="
 cd "$REPO_DIR"
-pip install -e ".[server,dev]" --quiet
 
-echo "=== Installing ML deps (CUDA 12.1) ==="
-pip install torch --index-url https://download.pytorch.org/whl/cu121 --quiet
-pip install transformers trl peft bitsandbytes accelerate datasets --quiet
-pip install matplotlib numpy --quiet
+python -m pip install --upgrade pip
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu121
+python -m pip install -e ".[server,train,dev]"
+python -m pip install matplotlib numpy pandas
 
-echo "=== Verifying GPU stack ==="
-python - <<'EOF'
-import torch
-assert torch.cuda.is_available(), "CUDA not visible to Python — check module load"
-print(f"  torch {torch.__version__}  cuda {torch.version.cuda}  devices={torch.cuda.device_count()}")
-EOF
-
-echo "=== Pre-downloading Qwen/Qwen3-1.7B to $HF_CACHE ==="
 mkdir -p "$HF_CACHE"
 export HF_HOME="$HF_CACHE"
-python - <<'EOF'
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
-print("  Downloading tokenizer...")
-AutoTokenizer.from_pretrained("Qwen/Qwen3-1.7B")
-print("  Downloading model weights (bf16, ~3.5 GB)...")
-AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-1.7B", torch_dtype=torch.bfloat16)
-print("  Download complete.")
-EOF
 
-echo ""
-echo "=== Setup complete ==="
-echo "  Conda env : $ENV_DIR"
-echo "  HF cache  : $HF_CACHE"
-echo ""
-echo "Next step:"
-echo "  sbatch hpc/train_h100.slurm"
+python - <<'PY'
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+
+model_id = "Qwen/Qwen3-1.7B"
+print(f"Pre-downloading {model_id}")
+AutoTokenizer.from_pretrained(model_id)
+AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16)
+print("Model cache ready")
+PY
+
+python - <<'PY'
+import torch
+print(f"torch={torch.__version__} cuda={torch.version.cuda} cuda_available={torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"gpu={torch.cuda.get_device_name(0)}")
+PY
+
+echo "Setup complete"
+echo "  repo:  $REPO_DIR"
+echo "  env:   $ENV_DIR"
+echo "  cache: $HF_CACHE"
+echo "Next: sbatch hpc/train_h100.slurm"

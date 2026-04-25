@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 from envs.pr_review_env.models import PRReviewAction
 from envs.pr_review_env.server.pr_review_env import PRReviewEnv
+from envs.pr_review_env.server.tasks import PRTask, load_tasks, task_review_config
 
 
 def random_policy(observation, rng: random.Random) -> PRReviewAction:
@@ -59,16 +60,17 @@ def heuristic_policy(observation) -> list[PRReviewAction]:
 
 def decide_final_verdict(observation) -> PRReviewAction:
     scores = {name: payload.get("score", 1.0) for name, payload in observation.tool_results.items()}
+    findings_count = {
+        name: len(payload.get("findings") or [])
+        for name, payload in observation.tool_results.items()
+    }
     security_score = scores.get("check_security", 1.0)
-    config_score = scores.get("check_config", 1.0)
-    quality_score = scores.get("check_quality", 1.0)
-    build_score = scores.get("check_build_and_types", 1.0)
-    tests_score = scores.get("check_tests", 1.0)
     min_score = min(scores.values(), default=1.0)
+    any_finding = any(count > 0 for count in findings_count.values())
 
-    if security_score <= 0.55:
+    if security_score <= 0.55 or min_score <= 0.45:
         verdict = "reject"
-    elif min_score <= 0.74 or config_score <= 0.72 or quality_score <= 0.68 or build_score <= 0.7 or tests_score <= 0.65:
+    elif any_finding or min_score <= 0.85:
         verdict = "request_changes"
     else:
         verdict = "approve"
@@ -77,17 +79,23 @@ def decide_final_verdict(observation) -> PRReviewAction:
         tool_name="submit_review",
         arguments={
             "verdict": verdict,
+            "confidence": round(min(0.95, 0.55 + 0.1 * len(scores)), 2),
             "reasoning": f"Baseline verdict from tool scores: {json.dumps(scores, sort_keys=True)}",
         },
     )
 
 
-def run_random(env: PRReviewEnv, episodes: int, seed: int) -> dict:
+def run_random(tasks: list[PRTask], task_path: str, loader_mode: str, episodes: int, seed: int) -> dict:
     rng = random.Random(seed)
     total_return = 0.0
     completed = 0
-    for _ in range(episodes):
-        observation = env.reset()
+    for task in tasks[:episodes]:
+        env = PRReviewEnv(
+            seed=seed,
+            task_path=task_path,
+            review_config=task_review_config(task, mode=loader_mode),
+        )
+        observation = env.reset(task_id=task.task_id)
         episode_return = 0.0
         observation = env.step(random_policy(observation, rng))
         episode_return += observation.reward or 0.0
@@ -103,11 +111,16 @@ def run_random(env: PRReviewEnv, episodes: int, seed: int) -> dict:
     }
 
 
-def run_heuristic(env: PRReviewEnv, episodes: int) -> dict:
+def run_heuristic(tasks: list[PRTask], task_path: str, loader_mode: str, episodes: int) -> dict:
     total_return = 0.0
     completed = 0
-    for _ in range(episodes):
-        observation = env.reset()
+    for task in tasks[:episodes]:
+        env = PRReviewEnv(
+            seed=7,
+            task_path=task_path,
+            review_config=task_review_config(task, mode=loader_mode),
+        )
+        observation = env.reset(task_id=task.task_id)
         episode_return = 0.0
         for action in heuristic_policy(observation):
             observation = env.step(action)
@@ -128,11 +141,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run benchmark baselines for the PR review env.")
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--tasks-file", "--task-bank", dest="tasks_file", default="all")
+    parser.add_argument(
+        "--task-loader-mode",
+        default="short",
+        choices=["short", "empty", "full", "off", "none"],
+    )
     args = parser.parse_args()
 
-    env = PRReviewEnv(seed=args.seed)
-    print(json.dumps(run_random(env, args.episodes, args.seed)))
-    print(json.dumps(run_heuristic(env, args.episodes)))
+    tasks = load_tasks(args.tasks_file)
+    episodes = min(args.episodes, len(tasks))
+    print(json.dumps(run_random(tasks, args.tasks_file, args.task_loader_mode, episodes, args.seed)))
+    print(json.dumps(run_heuristic(tasks, args.tasks_file, args.task_loader_mode, episodes)))
 
 
 if __name__ == "__main__":
