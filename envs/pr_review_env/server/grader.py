@@ -188,6 +188,8 @@ def step_reward(
     already_called: bool,
     step_count: int,
     config: ReviewConfig | None = None,
+    evidence_count: int | None = None,
+    min_tools: int | None = None,
 ) -> float:
     """Per-step raw reward for calling a tool (not submit_review/escalate).
 
@@ -199,6 +201,7 @@ def step_reward(
         duplicate        -> -0.4  (clearly worse than any novel tool)
         novel irrelevant ->  0.1  (ok, but noticeably below relevant)
         novel relevant   ->  0.3  (+ domain priority scaling)
+        after min_tools  -> -0.3  (discourages tool loops once ready)
         efficiency decay  -> -0.05 per step past tier threshold
     """
     if tool_name in {"submit_review", "escalate"}:
@@ -206,6 +209,13 @@ def step_reward(
 
     if already_called:
         return -0.4
+
+    if (
+        evidence_count is not None
+        and min_tools is not None
+        and evidence_count >= min_tools
+    ):
+        return -0.3
 
     reward = 0.1
     if tool_name in relevant_tools(task, config):
@@ -280,6 +290,7 @@ def get_scoring_logic() -> dict[str, Any]:
         "base_step_reward": 0.1,
         "relevance_bonus": 0.2,
         "duplicate_penalty": -0.4,
+        "post_min_tools_analysis_penalty": -0.3,
         "efficiency_decay_step": -0.05,
         "terminal_correct_evidence_base": 1.0,
         "terminal_correct_early_submit": 0.2,

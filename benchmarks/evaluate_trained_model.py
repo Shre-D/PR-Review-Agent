@@ -16,7 +16,7 @@ from envs.pr_review_env.server.context_loader import load_review_config
 from envs.pr_review_env.server.pr_review_env import PRReviewEnv
 from envs.pr_review_env.server.tasks import PRTask, load_tasks, task_review_config
 from train.adaptive_router import review_requirements
-from train.grpo_train import SYSTEM_PROMPT, _action_with_state_args, build_obs_prompt, parse_action
+from train.grpo_train import SYSTEM_PROMPT, _action_with_state_args, parse_action, training_prompt
 from train.train_config import TrainingConfig
 
 
@@ -65,7 +65,7 @@ def select_tasks(
 def build_prompt_messages(obs: PRReviewObservation, review_config: dict | None = None) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": build_obs_prompt(obs, review_config)},
+        {"role": "user", "content": training_prompt(obs, review_config, include_system=False)},
     ]
 
 

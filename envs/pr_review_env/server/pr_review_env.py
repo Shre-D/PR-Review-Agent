@@ -115,6 +115,7 @@ class PRReviewEnv(MCPEnvironment):
                 action.arguments.setdefault("review_config", self._review_config.model_dump())
 
         already_called = action.tool_name in self._state.tools_called_this_episode
+        evidence_count_before_action = len(self._state.tool_results)
         base_obs = super().step(action, timeout_s=timeout_s, **kwargs)
         if not isinstance(base_obs, CallToolObservation):
             raise TypeError(f"Unexpected observation type: {type(base_obs)}")
@@ -144,12 +145,15 @@ class PRReviewEnv(MCPEnvironment):
             history_line = f"{action.tool_name}: terminal"
 
         self._state.review_history.append(history_line)
+        route = self._route_requirements()
         reward = step_reward(
             self._task,
             action.tool_name,
             already_called=already_called,
             step_count=self._state.step_count,
             config=self._review_config,
+            evidence_count=evidence_count_before_action,
+            min_tools=int(route["min_tools"]),
         )
 
         # Inference-only confidence gate: if the model submits with low confidence
@@ -186,7 +190,6 @@ class PRReviewEnv(MCPEnvironment):
         if action.tool_name in {"submit_review", "escalate"}:
             submitted_verdict = result_payload.get("verdict", action.tool_name)
             confidence = result_payload.get("confidence")
-            route = self._route_requirements()
             early_submit = len(self._state.tool_results) < int(route["min_tools"])
             if early_submit and self._state.early_submit_redirects < _EARLY_SUBMIT_PATIENCE_STEPS:
                 self._state.early_submit_redirects += 1

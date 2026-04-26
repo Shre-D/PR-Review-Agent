@@ -13,6 +13,8 @@ from benchmarks.run_baselines import decide_final_verdict, heuristic_policy
 from envs.pr_review_env.models import PRReviewAction, PRReviewObservation
 from envs.pr_review_env.server.pr_review_env import PRReviewEnv
 from envs.pr_review_env.server.tasks import load_tasks, task_review_config
+from train.adaptive_router import review_requirements
+from train.grpo_train import training_prompt
 
 
 def build_prompt(observation: PRReviewObservation) -> str:
@@ -57,6 +59,18 @@ def action_to_message(action: PRReviewAction) -> str:
     )
 
 
+def _phase(observation: PRReviewObservation, review_config: dict | None) -> str:
+    route = review_requirements(observation, review_config)
+    evidence_count = len(
+        {
+            tool
+            for tool in (observation.tool_results or {})
+            if tool not in {"submit_review", "escalate"}
+        }
+    )
+    return "terminal_ready" if evidence_count >= int(route["min_tools"]) else "evidence_gathering"
+
+
 def export_teacher_traces(
     limit: int | None = None,
     tasks_file: str = "all",
@@ -68,17 +82,35 @@ def export_teacher_traces(
 
     traces: list[dict] = []
     for task in tasks:
+        review_config = task_review_config(task, mode=task_loader_mode)
         env = PRReviewEnv(
             seed=7,
             task_path=tasks_file,
-            review_config=task_review_config(task, mode=task_loader_mode),
+            review_config=review_config,
         )
         observation = env.reset(task_id=task.task_id)
-        prompt = build_prompt(observation)
+        prompt = training_prompt(observation, review_config)
         actions = heuristic_policy(observation)
 
         step_trace = []
+        state_actions = []
         for action in actions:
+            state_prompt = training_prompt(observation, review_config)
+            phase = _phase(observation, review_config)
+            target_action = decide_final_verdict(observation) if phase == "terminal_ready" else action
+            state_actions.append(
+                {
+                    "prompt": state_prompt,
+                    "target_response": action_to_message(target_action),
+                    "phase": phase,
+                    "messages": [
+                        {"role": "user", "content": state_prompt},
+                        {"role": "assistant", "content": action_to_message(target_action)},
+                    ],
+                }
+            )
+            if phase == "terminal_ready":
+                break
             observation = env.step(action)
             step_trace.append(
                 {
@@ -89,6 +121,18 @@ def export_teacher_traces(
             )
 
         final_action = decide_final_verdict(observation)
+        final_prompt = training_prompt(observation, review_config)
+        state_actions.append(
+            {
+                "prompt": final_prompt,
+                "target_response": action_to_message(final_action),
+                "phase": "terminal_ready",
+                "messages": [
+                    {"role": "user", "content": final_prompt},
+                    {"role": "assistant", "content": action_to_message(final_action)},
+                ],
+            }
+        )
         observation = env.step(final_action)
         step_trace.append(
             {
@@ -107,6 +151,7 @@ def export_teacher_traces(
                     {"role": "user", "content": prompt},
                     {"role": "assistant", "content": action_to_message(final_action)},
                 ],
+                "state_actions": state_actions,
                 "trajectory": step_trace,
                 "expected_verdict": task.expected_verdict,
                 "predicted_verdict": final_action.arguments["verdict"],

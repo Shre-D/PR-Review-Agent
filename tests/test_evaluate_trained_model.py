@@ -39,6 +39,8 @@ def test_build_prompt_messages_contains_observation_context():
     assert messages[0]["role"] == "system"
     assert "Test PR" in messages[1]["content"]
     assert "Route tier" in messages[1]["content"]
+    assert "Review phase:" in messages[1]["content"]
+    assert "You are a code reviewer" not in messages[1]["content"]
 
 
 def test_summarize_results_computes_accuracy_and_return():

@@ -119,6 +119,20 @@ def test_config_domain_priority_adjusts_step_reward():
     assert configured_reward > default_reward
 
 
+def test_step_reward_penalizes_extra_analysis_after_min_tools():
+    task = _task()
+    reward = step_reward(
+        task,
+        "check_quality",
+        already_called=False,
+        step_count=3,
+        evidence_count=2,
+        min_tools=2,
+    )
+
+    assert reward == -0.3
+
+
 def test_terminal_reward_ignores_confidence_for_grader_independence():
     task = _task()
     low = terminal_reward(

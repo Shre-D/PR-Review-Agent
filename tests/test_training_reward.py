@@ -1,9 +1,11 @@
 from train.grpo_train import (
     _action_with_state_args,
     _clean_review_config_payload,
+    _tokenize_sft_examples,
     build_training_state_rows,
     make_env_reward_func,
     score_completion_locally,
+    training_prompt,
 )
 from envs.pr_review_env.models import PRReviewAction, PRReviewObservation
 from envs.pr_review_env.server.grader import RAW_FLOOR
@@ -88,7 +90,58 @@ def test_build_training_state_rows_contains_replayable_state():
     rows = build_training_state_rows(cfg)
 
     assert rows
-    assert {"prompt", "task_id", "replay_actions"} <= set(rows[0])
+    assert {"prompt", "task_id", "replay_actions", "phase"} <= set(rows[0])
+
+
+def test_training_prompt_switches_to_terminal_ready_after_min_tools():
+    obs = PRReviewObservation(
+        diff_str="+unsafe = True",
+        primary_language="python",
+        changed_file_types=["python"],
+        repo_kind="backend_service",
+        tool_results={
+            "check_security": {"score": 0.1},
+            "check_quality": {"score": 0.8},
+        },
+        metadata={"route": {"min_tools": 2}, "relevant_tools": ["check_security"]},
+    )
+
+    prompt = training_prompt(obs)
+
+    assert "Review phase: TERMINAL_READY" in prompt
+    assert "Submit the final verdict now" in prompt
+
+
+def test_sft_tokenization_masks_prompt_and_keeps_target():
+    class TinyTokenizer:
+        eos_token_id = 0
+
+        def __call__(self, text, add_special_tokens=False):  # noqa: ANN001
+            return {"input_ids": [ord(char) for char in text]}
+
+    rows = [
+        {
+            "prompt": "prompt text",
+            "target_response": '{"tool_name":"submit_review","arguments":{}}',
+            "text": "",
+        }
+    ]
+
+    item = _tokenize_sft_examples(TinyTokenizer(), rows, max_length=256)[0]
+
+    first_label = next(label for label in item["labels"] if label != -100)
+    assert first_label == ord("{")
+    assert item["labels"][-1] == 0
+
+
+def test_terminal_ready_rows_are_oversampled():
+    cfg = TrainingConfig.for_cpu()
+    cfg.training_task_limit = 1
+    rows = build_training_state_rows(cfg, terminal_multiplier=3)
+
+    phases = [row["phase"] for row in rows]
+    assert "terminal_ready" in phases
+    assert phases.count("terminal_ready") >= 3
 
 
 def test_cpu_training_config_uses_valid_grpo_generation_count():

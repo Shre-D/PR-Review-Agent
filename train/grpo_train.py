@@ -56,7 +56,10 @@ try:
         AutoModelForCausalLM,
         AutoTokenizer,
         BitsAndBytesConfig,
+        DataCollatorForSeq2Seq,
+        Trainer,
         TrainerCallback,
+        TrainingArguments,
     )
     from trl import GRPOConfig, GRPOTrainer
     _ML_AVAILABLE = True
@@ -189,23 +192,58 @@ def _action_with_state_args(action: PRReviewAction, obs: PRReviewObservation) ->
     return PRReviewAction(tool_name=action.tool_name, arguments=args)
 
 
-def training_prompt(obs: PRReviewObservation, review_config: dict | None = None) -> str:
-    route = review_requirements(obs, review_config)
-    return "\n\n".join(
-        [
-            SYSTEM_PROMPT.strip(),
-            build_obs_prompt(obs, review_config),
-            (
-                "Routing rule: collect at least "
-                f"{route['min_tools']} evidence tools before any terminal verdict."
-            ),
-            (
-                "Prefer an evidence tool first. Early final verdicts are redirected "
-                "for a short evidence-gathering window before they can end the review."
-            ),
-            "Output exactly one JSON tool call.",
-        ]
+def _evidence_count(obs: PRReviewObservation) -> int:
+    return len(
+        {
+            tool
+            for tool in (obs.tool_results or {})
+            if tool not in {"submit_review", "escalate"}
+        }
     )
+
+
+def _phase_instruction(obs: PRReviewObservation, review_config: dict | None = None) -> str:
+    route = review_requirements(obs, review_config)
+    evidence_count = _evidence_count(obs)
+    min_tools = int(route["min_tools"])
+    remaining = max(0, min_tools - evidence_count)
+    relevant = obs.metadata.get("relevant_tools", []) if isinstance(obs.metadata, dict) else []
+    relevant_text = ", ".join(f"`{tool}`" for tool in relevant) if relevant else "the task's risk domains"
+
+    if evidence_count < min_tools:
+        return (
+            "Review phase: EVIDENCE_GATHERING.\n"
+            f"You have collected {evidence_count}/{min_tools} required evidence tools. "
+            f"Call {remaining} new relevant evidence tool(s) before a terminal verdict. "
+            f"Prefer tools covering {relevant_text}. Do not submit yet unless no evidence tool is available."
+        )
+
+    return (
+        "Review phase: TERMINAL_READY.\n"
+        f"You have collected {evidence_count}/{min_tools} required evidence tools. "
+        "Submit the final verdict now with `submit_review`. Do not call another analysis tool unless a distinct, critical risk domain remains unchecked."
+    )
+
+
+def training_prompt(
+    obs: PRReviewObservation,
+    review_config: dict | None = None,
+    *,
+    include_system: bool = True,
+) -> str:
+    route = review_requirements(obs, review_config)
+    parts = [
+        build_obs_prompt(obs, review_config),
+        (
+            "Routing rule: collect at least "
+            f"{route['min_tools']} evidence tools before any terminal verdict."
+        ),
+        _phase_instruction(obs, review_config),
+        "Output exactly one JSON tool call.",
+    ]
+    if include_system:
+        parts.insert(0, SYSTEM_PROMPT.strip())
+    return "\n\n".join(parts)
 
 
 def _read_holdout_ids(path: str | None) -> set[str]:
@@ -225,6 +263,7 @@ def build_training_state_rows(
     cfg: TrainingConfig,
     review_config: dict | None = None,
     holdout_ids: set[str] | None = None,
+    terminal_multiplier: int = 6,
 ) -> list[dict]:
     """Build trainable env states. Rewards are computed online, not precomputed."""
     tasks = load_tasks(cfg.tasks_file)
@@ -243,30 +282,36 @@ def build_training_state_rows(
         replay_actions: list[dict] = []
 
         for teacher_action in heuristic_policy(obs):
-            rows.append(
-                {
-                    "prompt": training_prompt(obs, task_config),
-                    "task_id": task.task_id,
-                    "replay_actions": list(replay_actions),
-                    "review_config": task_config,
-                    "route": review_requirements(obs, task_config),
-                }
-            )
+            route = review_requirements(obs, task_config)
+            row = {
+                "prompt": training_prompt(obs, task_config),
+                "task_id": task.task_id,
+                "replay_actions": list(replay_actions),
+                "review_config": task_config,
+                "route": route,
+                "phase": "terminal_ready"
+                if _evidence_count(obs) >= int(route["min_tools"])
+                else "evidence_gathering",
+            }
+            rows.append(row)
+            if row["phase"] == "terminal_ready":
+                rows.extend(dict(row) for _ in range(max(0, terminal_multiplier - 1)))
             obs = env.step(_action_with_state_args(teacher_action, obs))
             replay_actions.append(teacher_action.model_dump())
             if obs.done:
                 break
 
         if not obs.done:
-            rows.append(
-                {
-                    "prompt": training_prompt(obs, task_config),
-                    "task_id": task.task_id,
-                    "replay_actions": list(replay_actions),
-                    "review_config": task_config,
-                    "route": review_requirements(obs, task_config),
-                }
-            )
+            route = review_requirements(obs, task_config)
+            row = {
+                "prompt": training_prompt(obs, task_config),
+                "task_id": task.task_id,
+                "replay_actions": list(replay_actions),
+                "review_config": task_config,
+                "route": route,
+                "phase": "terminal_ready",
+            }
+            rows.extend(dict(row) for _ in range(max(1, terminal_multiplier)))
             final_action = decide_final_verdict(obs)
             replay_actions.append(final_action.model_dump())
 
@@ -303,6 +348,8 @@ class TrainingMetricsCounter:
         self.normalized_rewards: list[float] = []
         self.terminal_count: int = 0
         self.terminal_correct: int = 0
+        self.terminal_ready_count: int = 0
+        self.terminal_ready_submit_count: int = 0
         self.parse_failures: int = 0
         self.env_errors: int = 0
 
@@ -313,6 +360,7 @@ class TrainingMetricsCounter:
         raw_reward: float | None = None,
         terminal: bool = False,
         correct: bool | None = None,
+        phase: str | None = None,
         parse_failed: bool = False,
         env_error: bool = False,
     ) -> None:
@@ -325,6 +373,10 @@ class TrainingMetricsCounter:
                 self.terminal_count += 1
                 if correct:
                     self.terminal_correct += 1
+            if phase == "terminal_ready":
+                self.terminal_ready_count += 1
+                if tool_name == "submit_review":
+                    self.terminal_ready_submit_count += 1
             if parse_failed:
                 self.parse_failures += 1
             if env_error:
@@ -353,6 +405,11 @@ class TrainingMetricsCounter:
                     if self.terminal_count
                     else 0.0
                 ),
+                "terminal_ready_submit_rate": (
+                    self.terminal_ready_submit_count / self.terminal_ready_count
+                    if self.terminal_ready_count
+                    else 0.0
+                ),
             }
             for tool in _ALL_TOOLS:
                 snapshot[f"tool_frac/{tool}"] = self.tool_counts.get(tool, 0) / total
@@ -368,6 +425,7 @@ def score_completion_locally(
     review_config: dict | None = None,
     task_path: str | None = None,
     counter: TrainingMetricsCounter | None = None,
+    phase: str | None = None,
 ) -> float:
     """Score a single completion by replaying it in a local env.
 
@@ -382,6 +440,7 @@ def score_completion_locally(
                 tool_name="invalid",
                 normalized_reward=reward_floor(),
                 raw_reward=RAW_FLOOR,
+                phase=phase,
                 parse_failed=True,
             )
         return float(RAW_FLOOR)
@@ -399,6 +458,7 @@ def score_completion_locally(
                         tool_name=str(payload.get("tool_name", "invalid")),
                         normalized_reward=reward_floor(),
                         raw_reward=RAW_FLOOR,
+                        phase=phase,
                         env_error=True,
                     )
                 return float(RAW_FLOOR)
@@ -412,6 +472,7 @@ def score_completion_locally(
                 tool_name=str(payload.get("tool_name", "invalid")),
                 normalized_reward=reward_floor(),
                 raw_reward=RAW_FLOOR,
+                phase=phase,
                 env_error=True,
             )
         return float(RAW_FLOOR)
@@ -424,6 +485,7 @@ def score_completion_locally(
                 tool_name=action.tool_name,
                 normalized_reward=normalize_reward(raw_reward),
                 raw_reward=raw_reward,
+                phase=phase,
                 env_error=True,
             )
         return round(raw_reward, 3)
@@ -440,6 +502,7 @@ def score_completion_locally(
             raw_reward=raw_reward,
             terminal=terminal,
             correct=correct,
+            phase=phase,
         )
     return round(raw_reward, 3)
 
@@ -479,12 +542,15 @@ def make_env_reward_func(
             raise ValueError("GRPO reward function requires task_id dataset column")
         replays = replay_actions or kwargs.get("replay_actions") or [None] * len(completions)
         review_configs = kwargs.get("review_config") or [review_config] * len(completions)
+        phases = kwargs.get("phase") or [None] * len(completions)
         if isinstance(task_ids, str):
             task_ids = [task_ids] * len(completions)
         if isinstance(review_configs, dict) or review_configs is None:
             review_configs = [review_configs] * len(completions)
+        if isinstance(phases, str) or phases is None:
+            phases = [phases] * len(completions)
         rewards = []
-        for completion, tid, replay, cfg_payload in zip(completions, task_ids, replays, review_configs):
+        for completion, tid, replay, cfg_payload, phase in zip(completions, task_ids, replays, review_configs, phases):
             rewards.append(
                 score_completion_locally(
                     completion,
@@ -493,6 +559,7 @@ def make_env_reward_func(
                     _clean_review_config_payload(cfg_payload),
                     task_path,
                     counter=counter,
+                    phase=phase,
                 )
             )
         return rewards
@@ -502,6 +569,161 @@ def make_env_reward_func(
 
 def build_dataset(rows: list[dict]) -> "Dataset":
     return Dataset.from_list(rows)
+
+
+def action_to_training_text(action: PRReviewAction) -> str:
+    """Compact JSON target for SFT warm-start examples."""
+    payload: dict[str, object] = {"tool_name": action.tool_name, "arguments": {}}
+    if action.tool_name == "submit_review":
+        payload["arguments"] = {
+            "verdict": action.arguments.get("verdict", "request_changes"),
+            "confidence": action.arguments.get("confidence", 0.8),
+            "reasoning": action.arguments.get("reasoning", "Evidence supports this verdict."),
+        }
+    elif action.tool_name == "escalate":
+        payload["arguments"] = {
+            "reason": action.arguments.get("reason", "Human review is needed."),
+        }
+    return json.dumps(payload, sort_keys=True)
+
+
+def build_sft_rows(
+    cfg: TrainingConfig,
+    review_config: dict | None = None,
+    holdout_ids: set[str] | None = None,
+    terminal_multiplier: int = 6,
+) -> list[dict]:
+    """Build teacher-forced state/action pairs for a short supervised warm start."""
+    tasks = load_tasks(cfg.tasks_file)
+    if cfg.training_task_ids:
+        tasks = [task for task in tasks if task.task_id in set(cfg.training_task_ids)]
+    if holdout_ids:
+        tasks = [task for task in tasks if task.task_id not in holdout_ids]
+    if cfg.training_task_limit and len(tasks) > cfg.training_task_limit:
+        tasks = tasks[: cfg.training_task_limit]
+
+    rows: list[dict] = []
+    for task in tasks:
+        task_config = review_config or task_review_config(task, mode=cfg.task_loader_mode)
+        env = PRReviewEnv(seed=7, task_path=cfg.tasks_file, review_config=task_config)
+        obs = env.reset(task_id=task.task_id)
+        replay_actions: list[dict] = []
+        added_terminal_row = False
+
+        for teacher_action in heuristic_policy(obs):
+            route = review_requirements(obs, task_config)
+            phase = (
+                "terminal_ready"
+                if _evidence_count(obs) >= int(route["min_tools"])
+                else "evidence_gathering"
+            )
+            target_action = decide_final_verdict(obs) if phase == "terminal_ready" else teacher_action
+            prompt = training_prompt(obs, task_config)
+            target_response = action_to_training_text(target_action)
+            row = {
+                "prompt": prompt,
+                "target_response": target_response,
+                "text": prompt + "\n" + target_response,
+                "task_id": task.task_id,
+                "phase": phase,
+                "replay_actions": list(replay_actions),
+            }
+            rows.append(row)
+            if phase == "terminal_ready":
+                rows.extend(dict(row) for _ in range(max(0, terminal_multiplier - 1)))
+                added_terminal_row = True
+                break
+            obs = env.step(_action_with_state_args(teacher_action, obs))
+            replay_actions.append(teacher_action.model_dump())
+            if obs.done:
+                break
+
+        if not obs.done and not added_terminal_row:
+            final_action = decide_final_verdict(obs)
+            prompt = training_prompt(obs, task_config)
+            target_response = action_to_training_text(final_action)
+            row = {
+                "prompt": prompt,
+                "target_response": target_response,
+                "text": prompt + "\n" + target_response,
+                "task_id": task.task_id,
+                "phase": "terminal_ready",
+                "replay_actions": list(replay_actions),
+            }
+            rows.extend(dict(row) for _ in range(max(1, terminal_multiplier)))
+
+    return rows
+
+
+def _tokenize_sft_examples(tokenizer, rows: list[dict], max_length: int = 2048) -> "Dataset":
+    DatasetCls = globals().get("Dataset")
+    if DatasetCls is None:
+        from datasets import Dataset as DatasetCls
+
+    dataset = DatasetCls.from_list(rows)
+
+    def tokenize(example):  # noqa: ANN001
+        prompt = example.get("prompt")
+        target = example.get("target_response")
+        if not prompt or not target:
+            text = str(example["text"])
+            split_at = text.rfind("\n")
+            prompt = text[: split_at + 1] if split_at >= 0 else ""
+            target = text[split_at + 1 :] if split_at >= 0 else text
+        prefix = f"{prompt}\n"
+        prompt_ids = tokenizer(prefix, add_special_tokens=False)["input_ids"]
+        target_ids = tokenizer(str(target), add_special_tokens=False)["input_ids"]
+        if tokenizer.eos_token_id is not None:
+            target_ids = target_ids + [tokenizer.eos_token_id]
+        if len(target_ids) >= max_length:
+            target_ids = target_ids[:max_length]
+            prompt_ids = []
+        else:
+            prompt_ids = prompt_ids[-(max_length - len(target_ids)) :]
+        input_ids = prompt_ids + target_ids
+        return {
+            "input_ids": input_ids,
+            "attention_mask": [1] * len(input_ids),
+            "labels": [-100] * len(prompt_ids) + list(target_ids),
+        }
+
+    return dataset.map(tokenize, remove_columns=dataset.column_names)
+
+
+def run_sft_warm_start(
+    model,
+    tokenizer,
+    cfg: TrainingConfig,
+    rows: list[dict],
+    steps: int,
+) -> None:
+    if steps <= 0 or not rows:
+        return
+
+    sft_args = TrainingArguments(
+        output_dir=str(Path(cfg.output_dir) / "sft_warm_start"),
+        max_steps=steps,
+        per_device_train_batch_size=cfg.per_device_train_batch_size,
+        gradient_accumulation_steps=max(1, cfg.gradient_accumulation_steps // 2),
+        learning_rate=cfg.learning_rate,
+        logging_steps=max(1, min(10, steps)),
+        save_steps=max(steps, 1),
+        report_to=cfg.report_to,
+        bf16=torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False,
+        fp16=not torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False,
+        remove_unused_columns=False,
+    )
+    tokenized = _tokenize_sft_examples(tokenizer, rows)
+    collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model, padding=True)
+    trainer = Trainer(
+        model=model,
+        args=sft_args,
+        train_dataset=tokenized,
+        data_collator=collator,
+        processing_class=tokenizer,
+    )
+    print(f"\nRunning SFT warm-start for {steps} steps on {len(rows)} teacher examples...")
+    trainer.train()
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +736,7 @@ _ENV_COLUMNS = [
     "normalized_reward_mean",
     "terminal_rate",
     "terminal_accuracy",
+    "terminal_ready_submit_rate",
     "parse_failure_rate",
     "env_error_rate",
     "n_completions",
@@ -650,6 +873,18 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--num-generations", type=int, default=None)
     parser.add_argument("--task-limit", type=int, default=None)
+    parser.add_argument(
+        "--terminal-row-multiplier",
+        type=int,
+        default=6,
+        help="Duplicate terminal-ready train states so submit_review is sampled often enough.",
+    )
+    parser.add_argument(
+        "--sft-warmup-steps",
+        type=int,
+        default=100,
+        help="Optional supervised teacher-forcing steps before GRPO. Use 50-200 for first real runs.",
+    )
     parser.add_argument("--tasks-file", "--task-bank", dest="tasks_file", default="all")
     parser.add_argument(
         "--task-loader-mode",
@@ -720,15 +955,29 @@ def main() -> None:
     if review_config:
         print(f"Loaded review config: {args.review_config}")
 
-    # Load model
-    model, tokenizer = load_model_qlora(cfg)
-
     holdout_ids = _read_holdout_ids(args.holdout_file)
     if holdout_ids:
         print(f"Holdout: excluding {len(holdout_ids)} task_ids from training (file={args.holdout_file})")
 
+    # Load model
+    model, tokenizer = load_model_qlora(cfg)
+
+    if args.sft_warmup_steps > 0:
+        sft_rows = build_sft_rows(
+            cfg,
+            review_config,
+            holdout_ids=holdout_ids,
+            terminal_multiplier=args.terminal_row_multiplier,
+        )
+        run_sft_warm_start(model, tokenizer, cfg, sft_rows, args.sft_warmup_steps)
+
     print("\nBuilding online-reward training states...")
-    rows = build_training_state_rows(cfg, review_config, holdout_ids=holdout_ids)
+    rows = build_training_state_rows(
+        cfg,
+        review_config,
+        holdout_ids=holdout_ids,
+        terminal_multiplier=args.terminal_row_multiplier,
+    )
     dataset = build_dataset(rows)
     print(f"  Built {len(rows)} train states from {cfg.training_task_limit} tasks")
 
